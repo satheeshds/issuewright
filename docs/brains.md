@@ -100,7 +100,13 @@ Then fill in:
    - Never hand a caller's `*bytes.Buffer` straight to `cmd.Stderr`: `io.Copy`
      will use `bytes.Buffer.ReadFrom`, which resets the buffer under any
      concurrent writer. Wrap it (`writeOnly`), as the pi driver does.
-3. The test — put a fake binary on `PATH` and assert the arguments, as
+3. Watch for a CLI that finishes its work but does not exit. Pi signals
+   `agent_settled` and then can sit in its event loop; the pi driver watches for
+   that event and stops the process a few seconds later, treating the run as
+   successful. Waiting for exit instead would burn the whole run timeout — it did,
+   on the first live pilot. There is a regression test
+   (`TestRunStopsAfterAgentSettled`) with a fake CLI that lingers.
+4. The test — put a fake binary on `PATH` and assert the arguments, as
    [`internal/brain/pi/pi_test.go`](../internal/brain/pi/pi_test.go) does.
 
 Roughly thirty lines. Nothing in the engine changes, and

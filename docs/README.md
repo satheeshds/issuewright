@@ -262,6 +262,10 @@ tool call, and the reported cost if the brain reports one.
 
 ## Known limitations
 
+- **CI on the agent's PR reflects the repo's baseline.** The PR triggers the
+  repo's own workflows (that is the point of a user/App token), so pre-existing
+  CI failures show up there too. Fix CI or the agent's PRs will always look red.
+
 - **Migrations.** A runner has no database. If the profile forbids `make migrate`
   (as it should), a schema-changing issue yields a PR with the schema and queries
   updated, and a note that a human must run migrations before merge.
