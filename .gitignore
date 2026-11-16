@@ -1,0 +1,4 @@
+/issuewright
+/dist/
+*.test
+.DS_Store
