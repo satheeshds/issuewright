@@ -1,0 +1,15 @@
+[Unit]
+Description=issuewright: poll for work every 10 minutes for repo %i
+Documentation=https://github.com/satheeshds/issuewright/blob/main/docs/README.md
+
+[Timer]
+# Persistent=true is what makes the night window harmless: a tick that was
+# missed while the machine was suspended fires as soon as it wakes.
+OnCalendar=*:0/10
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=20s
+Unit=issuewright@%i.service
+
+[Install]
+WantedBy=timers.target

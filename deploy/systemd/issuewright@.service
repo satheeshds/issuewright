@@ -1,0 +1,22 @@
+[Unit]
+Description=issuewright tick for repo %i
+Documentation=https://github.com/satheeshds/issuewright/blob/main/docs/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=agent
+Group=agent
+WorkingDirectory=/srv/agent
+EnvironmentFile=/srv/agent/agent.env
+ExecStart=/usr/local/bin/issuewright tick --repo %i
+# A tick that finds nothing exits quickly; a long run is bounded by the profile's
+# max_run_minutes. Never let one hang tick block the rest of the day.
+TimeoutStartSec=3h
+Nice=10
+# Tokens live in agent.env; nothing else about the host is needed.
+PrivateTmp=yes
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/satheeshds/issuewright/deploy"
 	"github.com/satheeshds/issuewright/internal/brain"
 	"github.com/satheeshds/issuewright/internal/config"
 	"github.com/satheeshds/issuewright/internal/engine"
@@ -324,7 +325,7 @@ func cmdInstall(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	units, err := scaffold.Units()
+	units, err := deploy.Units()
 	if err != nil {
 		return err
 	}
