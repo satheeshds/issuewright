@@ -153,13 +153,13 @@ func (c *common) overrides() config.Overrides {
 
 func (c *common) newEngine(cfg *config.Config, repo config.Repo) (*engine.Engine, error) {
 	return engine.New(engine.Options{
-		Agent:   cfg.Agent,
-		Repo:    repo,
-		DryRun:  c.dryRun,
+		Agent:    cfg.Agent,
+		Repo:     repo,
+		DryRun:   c.dryRun,
 		Override: c.overrides(),
-		GitHub:  github.NewCLI(cfg.Agent.GhBin),
-		Log:     c.logOut,
-		Verbose: c.verbose,
+		GitHub:   github.NewCLI(cfg.Agent.GhBin),
+		Log:      c.logOut,
+		Verbose:  c.verbose,
 	})
 }
 
