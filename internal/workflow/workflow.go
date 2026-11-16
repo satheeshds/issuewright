@@ -75,6 +75,9 @@ type Job struct {
 	Notes []string
 	// DryRun tells the workflow not to build a prompt that assumes publishing.
 	DryRun bool
+	// Resume means this branch already has work: ask for a continuation rather
+	// than a fresh start.
+	Resume bool
 }
 
 // Workflow is one kind of run.
