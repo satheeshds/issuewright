@@ -1,0 +1,228 @@
+package checks
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/satheeshds/issuewright/internal/config"
+)
+
+func TestMatchGlobs(t *testing.T) {
+	cases := []struct {
+		pattern, path string
+		want          bool
+	}{
+		{"apps/api_server/**/*.go", "apps/api_server/internal/auth/handler.go", true},
+		{"apps/api_server/**/*.go", "apps/api_server/main.go", true},
+		{"apps/api_server/**/*.go", "apps/admin/src/App.tsx", false},
+		{"**/*.dart", "apps/daily_fish_mobile/lib/main.dart", true},
+		{"**/*.dart", "main.dart", true},
+		{"db/*.go", "db/users.go", true},
+		{"db/*.go", "db/nested/users.go", false},
+		{".env", ".env", true},
+		{".env.*", ".env.local", true},
+		{".env.*", "config/.env.local", false},
+		{"apps/api_server/internal/*/handler.go", "apps/api_server/internal/cart/handler.go", true},
+		{"apps/api_server/internal/*/handler.go", "apps/api_server/internal/a/b/handler.go", false},
+		{"packages/openapi/**", "packages/openapi/generated/dart_client/lib/api.dart", true},
+		{"apps/admin/**", "apps/admin", false},
+		{"**", "anything/at/all.txt", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.pattern+" "+tc.path, func(t *testing.T) {
+			if got := Match(tc.pattern, tc.path); got != tc.want {
+				t.Errorf("Match(%q, %q) = %v, want %v", tc.pattern, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSelectPicksChecksForChangedPaths(t *testing.T) {
+	prof := &config.Profile{
+		Version: 1,
+		Checks: []config.Check{
+			{Name: "go", Paths: []string{"apps/api_server/**/*.go"}, Run: []string{"true"}},
+			{Name: "admin", Paths: []string{"apps/admin/**"}, Run: []string{"true"}},
+			{Name: "mobile", Paths: []string{"**/*.dart"}, Run: []string{"true"}},
+		},
+	}
+	got := Select(prof, []string{"apps/admin/src/App.tsx", "apps/daily_fish_mobile/lib/a.dart"})
+	if len(got) != 2 || got[0].Name != "admin" || got[1].Name != "mobile" {
+		t.Fatalf("selected = %+v", got)
+	}
+	if n := len(Select(prof, []string{"README.md"})); n != 0 {
+		t.Fatalf("docs-only change selected %d checks", n)
+	}
+	if n := len(Select(nil, []string{"a.go"})); n != 0 {
+		t.Fatalf("nil profile selected %d checks", n)
+	}
+}
+
+// newGitRepo makes a worktree with one committed file so drift can be tested.
+func newGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	if err := os.MkdirAll(filepath.Join(dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "db", "gen.go"), []byte("generated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "init")
+	return dir
+}
+
+func TestRunCheckPassesAndFails(t *testing.T) {
+	dir := t.TempDir()
+	r := New(Options{Dir: dir, Timeout: 30 * time.Second})
+	ok := r.RunCheck(context.Background(), config.Check{Name: "ok", Run: []string{"true"}})
+	if !ok.OK {
+		t.Fatalf("true failed: %+v", ok)
+	}
+	bad := r.RunCheck(context.Background(), config.Check{Name: "bad", Run: []string{"echo boom; exit 3"}})
+	if bad.OK || len(bad.Failures) == 0 {
+		t.Fatalf("failure not reported: %+v", bad)
+	}
+	if !strings.Contains(bad.Failures[0], "boom") {
+		t.Errorf("failure should carry output: %q", bad.Failures[0])
+	}
+}
+
+func TestRunCheckTimeout(t *testing.T) {
+	r := New(Options{Dir: t.TempDir(), Timeout: 200 * time.Millisecond})
+	res := r.RunCheck(context.Background(), config.Check{Name: "slow", Run: []string{"sleep 5"}})
+	if res.OK || !strings.Contains(res.Failures[0], "timed out") {
+		t.Fatalf("timeout not reported: %+v", res)
+	}
+}
+
+func TestDriftGateCatchesHandEdits(t *testing.T) {
+	dir := newGitRepo(t)
+	r := New(Options{Dir: dir})
+	check := config.Check{
+		Name:  "codegen",
+		Paths: []string{"**/*.go"},
+		Run:   []string{"true"}, // regeneration is a no-op here
+		Drift: []string{"db/*.go"},
+	}
+	// Clean tree: passes.
+	if res := r.RunCheck(context.Background(), check); !res.OK {
+		t.Fatalf("clean tree failed the drift gate: %+v", res)
+	}
+	// Hand edit the generated file: fails.
+	if err := os.WriteFile(filepath.Join(dir, "db", "gen.go"), []byte("edited by hand\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := r.RunCheck(context.Background(), check)
+	if res.OK {
+		t.Fatal("hand-edited generated file passed the drift gate")
+	}
+	if !strings.Contains(res.Failures[0], "edited by hand") || !strings.Contains(res.Failures[0], "db/gen.go") {
+		t.Errorf("unhelpful drift failure: %q", res.Failures[0])
+	}
+}
+
+func TestDriftGateAllowsRegeneration(t *testing.T) {
+	dir := newGitRepo(t)
+	r := New(Options{Dir: dir})
+	check := config.Check{
+		Name:  "codegen",
+		Run:   []string{"echo regenerated > db/gen.go"},
+		Drift: []string{"db/*.go"},
+	}
+	// The command itself rewrites the file and leaves it dirty: that is also a
+	// failure, because the committed content does not match a regeneration.
+	res := r.RunCheck(context.Background(), check)
+	if res.OK {
+		t.Fatal("a dirty generated file after regeneration must fail: it means the branch did not commit the output")
+	}
+}
+
+func TestSecretAndDeniedWrites(t *testing.T) {
+	changed := []string{".env", ".env.local", "db/gen.go", "internal/a.go"}
+	if got := SecretFiles([]string{".env", ".env.*"}, changed); len(got) != 2 {
+		t.Errorf("secrets = %v", got)
+	}
+	if got := DeniedWrites([]string{"db/*.go"}, changed); len(got) != 1 || got[0] != "db/gen.go" {
+		t.Errorf("denied = %v", got)
+	}
+}
+
+func TestForbiddenCommand(t *testing.T) {
+	never := []string{"make migrate", "make db-push"}
+	cases := map[string]bool{
+		"make migrate":                       true,
+		"make migrate && echo done":          true,
+		"cd apps/api_server && make migrate": true,
+		"make   migrate":                     true,
+		"make migrations":                    false,
+		"make db-push":                       true,
+		"make test":                          false,
+	}
+	for cmd, want := range cases {
+		_, got := ForbiddenCommand(never, cmd)
+		if got != want {
+			t.Errorf("ForbiddenCommand(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}
+
+func TestScanToolCallsEnforcesNeverRun(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "run.jsonl")
+	body := strings.Join([]string{
+		`{"type":"message_update","usage":{"totalTokens":5}}`,
+		`{"type":"tool_execution_start","toolCallId":"1","toolName":"bash","args":{"command":"go test ./..."}}`,
+		`{"type":"tool_execution_start","toolCallId":"2","toolName":"bash","args":{"command":"make migrate && echo ok"}}`,
+		`{"type":"tool_execution_end","toolCallId":"2","toolName":"bash","isError":false}`,
+	}, "\n")
+	if err := os.WriteFile(logPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := ScanToolCalls(logPath)
+	if err != nil {
+		t.Fatalf("ScanToolCalls: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	violations := ForbiddenCalls(calls, []string{"make migrate"})
+	if len(violations) != 1 || !strings.Contains(violations[0], "make migrate") {
+		t.Fatalf("violations = %v", violations)
+	}
+}
+
+func TestSummaryAndFailed(t *testing.T) {
+	results := []Result{
+		{Name: "go", Commands: []string{"go test"}, OK: true},
+		{Name: "admin", OK: false, Failures: []string{"npm test: exit 1"}},
+	}
+	if !Failed(results) {
+		t.Error("Failed() missed a failure")
+	}
+	s := Summary(results)
+	if !strings.Contains(s, "✅ `go`") || !strings.Contains(s, "❌ `admin`") {
+		t.Errorf("summary = %q", s)
+	}
+	if Summary(nil) == "" {
+		t.Error("empty summary should say so")
+	}
+}
