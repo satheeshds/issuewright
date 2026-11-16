@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,8 +92,40 @@ func (d *Driver) Run(ctx context.Context, spec brain.Spec, log io.Writer) (brain
 	cmd.Stderr = writeOnly{log}
 
 	res := brain.Result{Driver: "pi", Model: spec.Model, Thinking: spec.Thinking}
-	err := cmd.Run()
+
+	// `agent_settled` means the run is over, but the CLI may keep its event loop
+	// alive afterwards (observed on the box: the process sits in epoll with no
+	// children). Waiting for exit would burn the whole run timeout, so treat
+	// settled as completion and stop the process ourselves, with a short grace
+	// period for the final flush.
+	done := make(chan struct{})
+	err := cmd.Start()
+	if err == nil {
+		go func() {
+			select {
+			case <-tap.settled:
+				select {
+				case <-done:
+				case <-time.After(settleGrace):
+					if cmd.Process != nil {
+						_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+					}
+					select {
+					case <-done:
+					case <-time.After(2 * time.Second):
+						if cmd.Process != nil {
+							_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+						}
+					}
+				}
+			case <-done:
+			}
+		}()
+		err = cmd.Wait()
+	}
+	close(done)
 	res.Duration = time.Since(start)
+	res.Settled = tap.settledSeen.Load()
 	res.CostUSD = tap.cost
 	res.Summary = tap.lastText
 
@@ -107,6 +141,11 @@ func (d *Driver) Run(ctx context.Context, spec brain.Spec, log io.Writer) (brain
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		return res, fmt.Errorf("pi: timed out after %s", spec.Timeout)
+	}
+	// A settled run that we terminated ourselves is a success, not a signal death.
+	if res.Settled {
+		res.ExitCode = 0
+		return res, nil
 	}
 	if res.ExitCode != 0 {
 		return res, fmt.Errorf("pi: exit %d (%s)", res.ExitCode, firstLine(tap.lastError))
@@ -127,10 +166,18 @@ func (w writeOnly) Write(p []byte) (int, error) {
 
 // eventTap writes the raw JSONL through to the run log while extracting the two
 // things the runner needs: the final assistant text and the reported cost.
+// settleGrace is how long pi gets to flush after agent_settled before we stop it.
+const settleGrace = 3 * time.Second
+
 type eventTap struct {
 	out    io.Writer
 	cost   float64
 	tokens int
+	// settled is signalled once agent_settled arrives, which is the documented
+	// end of automatic work for a run.
+	settled     chan struct{}
+	settledOnce sync.Once
+	settledSeen atomic.Bool
 	// lastText is the final assistant message text seen.
 	lastText string
 	// lastError is the last error event's message, for a useful failure line.
@@ -142,7 +189,7 @@ func newEventTap(out io.Writer) *eventTap {
 	if out == nil {
 		out = io.Discard
 	}
-	return &eventTap{out: out}
+	return &eventTap{out: out, settled: make(chan struct{})}
 }
 
 func (t *eventTap) Write(p []byte) (int, error) {
@@ -218,6 +265,10 @@ func (t *eventTap) consume(line []byte) {
 		if b.Len() > 0 {
 			t.lastText = b.String()
 		}
+	}
+	if ev.Type == "agent_settled" {
+		t.settledSeen.Store(true)
+		t.settledOnce.Do(func() { close(t.settled) })
 	}
 	if ev.ErrorMessage != "" {
 		t.lastError = ev.ErrorMessage

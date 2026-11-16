@@ -435,6 +435,7 @@ type stubDriver struct {
 	sawWorkdir  string
 	sawModel    string
 	sawThinking string
+	brainText   string
 }
 
 func (d *stubDriver) Name() string { return "stub" }
@@ -461,11 +462,15 @@ func (d *stubDriver) Run(ctx context.Context, spec brain.Spec, log io.Writer) (b
 			return brain.Result{Driver: "stub"}, err
 		}
 	}
-	io.WriteString(log, `{"type":"message_end","message":{"content":[{"type":"text","text":"stub done"}]}}`+"\n")
+	text := d.brainText
+	if text == "" {
+		text = "stub done"
+	}
+	io.WriteString(log, `{"type":"message_end","message":{"content":[{"type":"text","text":"`+text+`"}]}}`+"\n")
 	if d.fail {
 		return brain.Result{Driver: "stub", ExitCode: 1}, os.ErrDeadlineExceeded
 	}
-	return brain.Result{Driver: "stub"}, nil
+	return brain.Result{Driver: "stub", Summary: text}, nil
 }
 
 // toolCallDriver emits a JSONL event claiming the agent ran a command.
@@ -499,4 +504,53 @@ func firstLineOf(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// The check runner writes to the same log as the brain. Closing that file before
+// the checks run SIGPIPEs them (real failure seen on the box: `go test` exit 141),
+// so the log must survive the whole job.
+func TestChecksDoNotSIGPIPEOnTheRunLog(t *testing.T) {
+	h := newHarness(t)
+	h.addIssue(60, "checks must run after the brain", "body")
+	h.profile.Checks = []config.Check{{Name: "noisy", Paths: []string{"**"},
+		Run: []string{`for i in $(seq 1 200); do echo "line $i of output"; done`}}}
+
+	e, logs := h.engine(t, &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"})
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if results[0].State != StateDone {
+		t.Fatalf("a noisy check must still pass: %+v\n%s", results, logs)
+	}
+	if !strings.Contains(h.gh.PRs[0].Body, "✅ `noisy`") {
+		t.Errorf("check result missing from the PR body: %q", h.gh.PRs[0].Body)
+	}
+}
+
+// A resumed run often writes no SUMMARY.md. The PR body must then use the
+// brain's own final message — never a canned template, and never a stray issue
+// reference (a real pilot produced a body starting with "Closes #0").
+func TestPRBodyWithoutSummaryUsesBrainText(t *testing.T) {
+	h := newHarness(t)
+	h.addIssue(70, "no summary", "body")
+	drv := &stubDriver{brainText: "Implemented the tests and committed them."}
+
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	body := h.gh.PRs[0].Body
+	if strings.Contains(body, "Closes #0") {
+		t.Errorf("PR body contains a placeholder issue reference:\n%s", body)
+	}
+	if !strings.Contains(body, "Implemented the tests and committed them.") {
+		t.Errorf("PR body should carry the brain's final message:\n%s", body)
+	}
+	if !strings.Contains(body, "Closes #70") {
+		t.Errorf("PR body must close the real issue:\n%s", body)
+	}
+	if n := strings.Count(body, "Closes #70"); n != 1 {
+		t.Errorf("Closes appears %d times:\n%s", n, body)
+	}
 }

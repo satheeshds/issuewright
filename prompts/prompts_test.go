@@ -71,9 +71,18 @@ func TestRenderUnknownWorkflow(t *testing.T) {
 	}
 }
 
-func TestSummaryTemplateExists(t *testing.T) {
-	if s := Summary(); !strings.Contains(s, "## Checks") {
+func TestSummaryTemplateIsNeutral(t *testing.T) {
+	s := Summary()
+	if !strings.Contains(s, "## What changed") {
 		t.Errorf("summary template = %q", s)
+	}
+	// The fallback must never name an issue: a real pilot shipped a PR body that
+	// began with "Closes #0" because the template hardcoded one.
+	if strings.Contains(s, "Closes #") {
+		t.Errorf("summary template must not reference an issue: %q", s)
+	}
+	if strings.Contains(s, "## Checks") {
+		t.Error("the runner appends the checks section itself; the template must not duplicate it")
 	}
 }
 

@@ -45,6 +45,9 @@ type Result struct {
 	Summary string
 	// CostUSD is best effort; zero means "not reported".
 	CostUSD float64
+	// Settled means the driver knows the run finished even if the CLI had to be
+	// stopped (see the pi driver).
+	Settled bool
 }
 
 // Driver is one agent CLI.

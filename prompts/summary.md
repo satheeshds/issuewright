@@ -1,9 +1,7 @@
-Closes #0
+## What changed
 
-## What the agent did
+(The agent did not write a report. See the run log or the diff.)
 
-(no SUMMARY.md was written by the run — see the check results below)
+## How it verifies
 
-## Checks
-
-(filled in by issuewright)
+(The runner's checks are below.)

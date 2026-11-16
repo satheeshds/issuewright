@@ -144,3 +144,48 @@ func contains(hay []string, needle string) bool {
 	}
 	return false
 }
+
+// A CLI that emits agent_settled and then refuses to exit is a real failure mode
+// (observed with pi on the home box): the run must complete on the settle, not
+// wait out the whole timeout.
+func TestRunStopsAfterAgentSettled(t *testing.T) {
+	d, _ := fakePi(t, `echo '{"type":"message_end","message":{"content":[{"type":"text","text":"finished"}]}}'
+echo '{"type":"agent_settled","aborted":false}'
+# Behave like pi: settle the run, then linger in an event loop.
+sleep 120
+exit 0
+`)
+	start := time.Now()
+	res, err := d.Run(context.Background(), brain.Spec{
+		Prompt: "x", Workdir: t.TempDir(), Timeout: 10 * time.Minute,
+	}, &bytes.Buffer{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("a settled run must not be an error: %v", err)
+	}
+	if !res.Settled {
+		t.Error("result should report Settled")
+	}
+	if res.Summary != "finished" {
+		t.Errorf("summary = %q", res.Summary)
+	}
+	if elapsed > 20*time.Second {
+		t.Errorf("settle handling took %s; it should stop the CLI within a few seconds", elapsed)
+	}
+}
+
+// Without a settle event the driver must still wait for the process, and a
+// timeout must be reported as one.
+func TestRunWithoutSettleHonoursTimeout(t *testing.T) {
+	d, _ := fakePi(t, "sleep 30\n")
+	start := time.Now()
+	_, err := d.Run(context.Background(), brain.Spec{
+		Prompt: "x", Workdir: t.TempDir(), Timeout: 300 * time.Millisecond,
+	}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("timeout error = %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("timeout did not stop the child promptly")
+	}
+}

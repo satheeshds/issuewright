@@ -396,16 +396,17 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	if err != nil {
 		return e.blocked(res, perms, fmt.Errorf("run log: %w", err))
 	}
-	runLog := io.MultiWriter(logFile, e.opt.Log)
+	defer logFile.Close()
+	runLog := io.MultiWriter(bestEffort{logFile}, bestEffort{e.opt.Log})
 	fmt.Fprintf(runLog, "# issuewright %d#%d workflow=%s attempt=%d brain=%s workdir=%s\n",
 		sel.Event.Number, res.Number, wf.Name(), attempt, choice.Name, workdir)
 
 	e.logf("running %s#%d with %s (branch %s, log %s)", wf.Name(), res.Number, choice.Name, branch, logPath)
 	runRes, runErr := driver.Run(ctx, spec, runLog)
 
-	// The log file must be complete before the enforcement scan reads it.
+	// Flush for the enforcement scan, but keep the handle open: the checks write
+	// to the same log, and a closed file would SIGPIPE the check commands.
 	_ = logFile.Sync()
-	_ = logFile.Close()
 
 	fail := func(reason string) Result {
 		return e.blocked(res, perms, errors.New(reason))
@@ -481,7 +482,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		if !perms.Write {
 			return fail(wf.Name() + " cannot publish without Write permission")
 		}
-		prURL, err := e.publish(ctx, res.Number, branch, title, summary, checkResults)
+		prURL, err := e.publish(ctx, res.Number, branch, title, summary, runRes.Summary, checkResults)
 		if err != nil {
 			return fail(err.Error())
 		}
@@ -509,7 +510,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 }
 
 // publish commits leftovers, pushes the branch, and opens or updates the PR.
-func (e *Engine) publish(ctx context.Context, number int, branch, title, summary string, results []checks.Result) (string, error) {
+func (e *Engine) publish(ctx context.Context, number int, branch, title, summary, brainSummary string, results []checks.Result) (string, error) {
 	dir := e.wts.IssuePath(number)
 	if branch == e.prof.BaseBranch {
 		return "", fmt.Errorf("refusing to publish to the base branch %q", branch)
@@ -519,7 +520,7 @@ func (e *Engine) publish(ctx context.Context, number int, branch, title, summary
 	}
 
 	// The agent's report is never committed, but always read first.
-	body := e.prBody(number, summary, results)
+	body := e.prBody(number, summary, brainSummary, results)
 	_ = os.Remove(filepath.Join(dir, prompts.SummaryFile))
 	_ = os.Remove(filepath.Join(dir, prompts.BlockedFile))
 	_ = os.Remove(filepath.Join(dir, prompts.ReviewFile))
@@ -555,9 +556,16 @@ func (e *Engine) publish(ctx context.Context, number int, branch, title, summary
 	return created.URL, nil
 }
 
-func (e *Engine) prBody(number int, summary string, results []checks.Result) string {
-	body := summary
-	if strings.TrimSpace(body) == "" {
+func (e *Engine) prBody(number int, summary, brainSummary string, results []checks.Result) string {
+	body := strings.TrimSpace(summary)
+	if body == "" {
+		// No SUMMARY.md (a resumed run often just says "done"): use the brain's
+		// final message rather than a canned template that would claim nothing.
+		if brainSummary = strings.TrimSpace(brainSummary); brainSummary != "" {
+			body = "> " + strings.ReplaceAll(brainSummary, "\n", "\n> ")
+		}
+	}
+	if body == "" {
 		body = prompts.Summary()
 	}
 	var b strings.Builder
@@ -813,6 +821,21 @@ func (e *Engine) pickWorkflow(name, fallback string) (workflow.Workflow, error) 
 		return nil, fmt.Errorf("workflow %q is disabled in %s", name, config.ProfilePath(e.opt.Repo.Path))
 	}
 	return wf, nil
+}
+
+// bestEffort swallows write errors: a broken or full log must never kill the
+// command whose output it is recording.
+type bestEffort struct{ w io.Writer }
+
+func (b bestEffort) Write(p []byte) (int, error) {
+	if b.w == nil {
+		return len(p), nil
+	}
+	n, err := b.w.Write(p)
+	if err != nil {
+		return len(p), nil
+	}
+	return n, nil
 }
 
 func dirExists(path string) bool {
