@@ -1,0 +1,88 @@
+# A reference profile for a polyglot monorepo: a Go API, a TypeScript admin UI,
+# and a Flutter app sharing a database schema and an OpenAPI contract.
+#
+# Copy to .agent/agent.yaml and delete what you do not need. Every field is
+# optional; `issuewright init` generates the same shape from what it finds.
+version: 1
+
+issue:
+  pickup: assignee            # assignee | label
+  force_label: agent:go       # labelling an issue also starts work
+  in_progress_label: agent:in-progress
+  blocked_label: agent:blocked
+  done_label: agent:done
+
+branch_prefix: agent/
+base_branch: main
+
+checks:
+  - name: go
+    paths: ["apps/api/**/*.go", "apps/api/go.mod", "apps/api/go.sum"]
+    run:
+      - cd apps/api && go test ./... && go build ./...
+
+  # Codegen is both a verification step and a drift gate: the generator may
+  # rewrite these paths, hands may not.
+  - name: codegen
+    paths:
+      - apps/api/queries/**
+      - apps/api/handlers/**
+      - apps/api/internal/*/handler.go
+      - packages/database/schema.sql
+    run:
+      - make sqlc
+      - make openapi
+      - make ts
+    drift:
+      - apps/api/db/**
+      - packages/openapi/swagger.yaml
+      - packages/openapi/swagger.json
+      - packages/openapi/docs.go
+      - packages/openapi/generated/**
+
+  - name: admin
+    paths: ["apps/admin/**"]
+    run:
+      - cd apps/admin && npm ci && npm run build && npm test
+
+  - name: mobile
+    paths: ["apps/mobile/**/*.dart", "apps/mobile/pubspec.yaml", "packages/openapi/generated/dart_client/**"]
+    run:
+      - cd apps/mobile && flutter pub get && flutter analyze && flutter test
+
+protect:
+  # Never hand-edited; regenerate instead.
+  write_denylist:
+    - apps/api/db/**
+    - packages/openapi/swagger.yaml
+    - packages/openapi/swagger.json
+    - packages/openapi/docs.go
+    - packages/openapi/generated/**
+  # Data-destroying or environment-touching commands, checked against the run log.
+  never_run:
+    - make migrate
+    - make db-push
+    - make minio-push
+    - psql
+  secret_paths: [".env", ".env.*"]
+
+prompt:
+  preamble_file: .agent/rules.md
+  notes:
+    - "Schema change: a human must run `make migrate` before merge."
+
+brain:
+  name: pi
+  model: ""                    # "" = the fleet default
+  thinking: high
+
+workflows:
+  implement:
+    enabled: true
+    pickup: assignee
+  review:
+    enabled: true
+    on: [pr_opened, comment_mention]
+    prompt: .agent/review.md   # optional: a different preamble for reviews
+  fix-ci:
+    enabled: false             # Phase 2: the engine ships, the workflow does not
