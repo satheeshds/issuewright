@@ -197,7 +197,9 @@ func (m *Manager) ChangedFiles(ctx context.Context, dir string) ([]string, error
 		seen[line] = true
 		files = append(files, line)
 	}
-	status, err := m.git(ctx, dir, "status", "--porcelain")
+	// -uall: without it git collapses a new directory to "db/", and a path-level
+	// denylist or check selector would miss every file inside it.
+	status, err := m.git(ctx, dir, "status", "--porcelain", "-uall")
 	if err != nil {
 		return nil, err
 	}

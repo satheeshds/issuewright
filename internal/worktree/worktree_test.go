@@ -163,6 +163,30 @@ func TestChangedFilesAndSummary(t *testing.T) {
 	if err != nil || !strings.Contains(summary, "feat: add a") {
 		t.Errorf("summary = %q, %v", summary, err)
 	}
+	// A brand-new directory must be listed file by file, not as "dir/".
+	if err := os.MkdirAll(filepath.Join(path, "packages", "openapi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "packages", "openapi", "swagger.yaml"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err = m.ChangedFiles(ctx, path)
+	if err != nil {
+		t.Fatalf("ChangedFiles with untracked dir: %v", err)
+	}
+	found := false
+	for _, f := range files {
+		if f == "packages/openapi/swagger.yaml" {
+			found = true
+		}
+		if strings.HasSuffix(f, "/") {
+			t.Errorf("directory reported as a path: %q", f)
+		}
+	}
+	if !found {
+		t.Errorf("untracked file not listed individually: %v", files)
+	}
+
 	behind, err := m.BehindBase(ctx, path)
 	if err != nil || behind {
 		t.Errorf("behind = %v, %v", behind, err)

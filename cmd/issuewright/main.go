@@ -391,36 +391,44 @@ func cmdList(args []string) error {
 		what = args[0]
 	}
 	switch what {
-	case "workflows", "all":
-		fmt.Println("workflows:")
-		for _, name := range workflow.Names() {
-			w, err := workflow.Get(name)
-			if err != nil {
-				continue
-			}
-			p := w.Perms()
-			fmt.Printf("  %-12s write=%-5t comment=%-5t label=%-5t checks=%-5t triggers=%s\n",
-				name, p.Write, p.Comment, p.Label, p.Checks, triggerNames(w.Triggers()))
-		}
-		if what == "workflows" {
-			return nil
-		}
-		fallthrough
-	case "brains", "all":
-		fmt.Println("brains:")
-		for _, name := range brain.Names() {
-			d, err := brain.Get(name)
-			if err != nil {
-				continue
-			}
-			c := d.Caps()
-			fmt.Printf("  %-12s resume=%-5t model=%-5t thinking=%-5t streaming=%t\n",
-				name, c.Resume, c.Model, c.Thinking, c.Streaming)
-		}
+	case "all":
+		listBrains()
+		fmt.Println()
+		listWorkflows()
+	case "workflows":
+		listWorkflows()
+	case "brains":
+		listBrains()
 	default:
 		return fmt.Errorf("unknown list target %q (workflows|brains)", what)
 	}
 	return nil
+}
+
+func listWorkflows() {
+	fmt.Println("workflows:")
+	for _, name := range workflow.Names() {
+		w, err := workflow.Get(name)
+		if err != nil {
+			continue
+		}
+		p := w.Perms()
+		fmt.Printf("  %-12s write=%-5t comment=%-5t label=%-5t checks=%-5t triggers=%s\n",
+			name, p.Write, p.Comment, p.Label, p.Checks, triggerNames(w.Triggers()))
+	}
+}
+
+func listBrains() {
+	fmt.Println("brains:")
+	for _, name := range brain.Names() {
+		d, err := brain.Get(name)
+		if err != nil {
+			continue
+		}
+		c := d.Caps()
+		fmt.Printf("  %-12s resume=%-5t model=%-5t thinking=%-5t streaming=%t\n",
+			name, c.Resume, c.Model, c.Thinking, c.Streaming)
+	}
 }
 
 func triggerNames(ts []workflow.Trigger) string {
