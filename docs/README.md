@@ -45,6 +45,21 @@ sudo issuewright install                                # writes the systemd uni
 One template instance per repo, so `issuewright@daily-fish.timer` and
 `issuewright@other-repo.timer` are independent.
 
+### One command instead
+
+`deploy/provision.sh` does everything below (idempotent, dry-run by default):
+
+```bash
+sudo ./deploy/provision.sh --slug you/repo --bot 'you-bot[bot]'          # show the plan
+sudo ./deploy/provision.sh --apply --slug you/repo --bot 'you-bot[bot]'  # do it
+```
+
+It creates the service user, the `/srv/agent` tree, installs the pinned release,
+writes `config.toml` and `agent.env` (never overwriting either), installs the
+units, and prints the handful of steps that need a human — `gh auth login` as the
+bot, `pi auth login`, and the agent's clone. The rest of this page is what it
+does and how to do it by hand.
+
 ### Box layout
 
 ```text

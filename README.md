@@ -51,6 +51,16 @@ issuewright new workflow triage    # scaffold + generated test + docs row
 issuewright new brain claude       # same, for a model CLI
 ```
 
+## Provision a box
+
+```bash
+sudo ./deploy/provision.sh --slug you/repo --bot 'you-bot[bot]'          # dry run
+sudo ./deploy/provision.sh --apply --slug you/repo --bot 'you-bot[bot]'
+```
+
+Idempotent, and it stops at the things only a human can do (`gh auth login` as the
+bot, `pi auth login`).
+
 ## Docs
 
 - [`docs/README.md`](docs/README.md) — install, box layout, runbook, troubleshooting

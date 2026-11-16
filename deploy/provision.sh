@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# provision.sh — prepare a machine to run issuewright for one or more repos.
+#
+# Idempotent. Dry-run by default; pass --apply to change anything.
+#
+#   sudo ./deploy/provision.sh --apply --slug you/repo --bot 'you-bot[bot]'
+#   sudo ./deploy/provision.sh --apply --slug you/repo --bot bot --instance repo
+#
+# What it does NOT do, on purpose (each needs a human at a keyboard):
+#   * `gh auth login` as the bot identity      (or drop a token into agent.env)
+#   * `pi auth login` for the brain's provider
+#   * creating the GitHub App / bot account
+#   * creating the agent's clone of a repo     (printed as the next command)
+set -euo pipefail
+
+# --- defaults --------------------------------------------------------------
+APPLY=0
+PREFIX=/usr/local/bin
+ROOT=/srv/agent
+AGENT_USER=agent
+AGENT_GROUP=agent
+VERSION="${ISSUEWRIGHT_VERSION:-v0.1.0}"
+SLUG=""
+BOT=""
+REPO_NAME=""
+INSTANCE=""
+LOCAL_BIN=""
+SKIP_TOOLCHAINS=0
+DOCKER_GROUP=1
+
+usage() {
+	cat <<'USAGE'
+provision.sh [--apply] [options]
+
+  --apply                 actually change the machine (default: dry run)
+  --slug owner/repo       repo the agent will work on (required with --apply)
+  --bot LOGIN             the login issues are assigned to (required with --apply)
+  --name NAME             instance name / agent clone directory (default: repo name)
+  --instance NAME         also enable issuewright@NAME.timer
+  --version TAG           issuewright release to install (default: v0.1.0)
+  --prefix DIR            install the binary here (default: /usr/local/bin)
+  --root DIR              state root (default: /srv/agent)
+  --local-bin PATH        use this binary instead of downloading a release
+  --skip-toolchains       do not try to install go/pi/opencode
+  --no-docker-group       do not add the agent user to the docker group
+  -h, --help              this text
+
+Exit codes: 0 ok, 1 usage/precondition error, 2 a step failed.
+USAGE
+}
+
+die() { echo "provision: $*" >&2; exit 2; }
+note() { printf '  %s\n' "$*"; }
+step() { printf '\n== %s\n' "$*"; }
+
+run() {
+	if [ "$APPLY" = 1 ]; then
+		"$@"
+	else
+		printf '  [dry-run] %s\n' "$*"
+	fi
+}
+
+# write_file PATH MODE <<<"content" — never overwrites an existing file.
+write_file() {
+	local path=$1 mode=$2 content
+	content=$(cat)
+	if [ -e "$path" ]; then
+		note "exists, left alone: $path"
+		return 0
+	fi
+	run mkdir -p "$(dirname "$path")"
+	if [ "$APPLY" = 1 ]; then
+		printf '%s' "$content" >"$path"
+		chmod "$mode" "$path"
+		note "wrote $path ($mode)"
+	else
+		note "[dry-run] would write $path ($mode):"
+		printf '%s\n' "$content" | sed 's/^/      /'
+	fi
+}
+
+# --- arguments -------------------------------------------------------------
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--apply) APPLY=1 ;;
+	--slug) SLUG=${2:?--slug needs a value}; shift ;;
+	--bot) BOT=${2:?--bot needs a value}; shift ;;
+	--name) REPO_NAME=${2:?--name needs a value}; shift ;;
+	--instance) INSTANCE=${2:?--instance needs a value}; shift ;;
+	--version) VERSION=${2:?--version needs a value}; shift ;;
+	--prefix) PREFIX=${2:?--prefix needs a value}; shift ;;
+	--root) ROOT=${2:?--root needs a value}; shift ;;
+	--local-bin) LOCAL_BIN=${2:?--local-bin needs a value}; shift ;;
+	--skip-toolchains) SKIP_TOOLCHAINS=1 ;;
+	--no-docker-group) DOCKER_GROUP=0 ;;
+	-h | --help) usage; exit 0 ;;
+	*) echo "provision: unknown argument $1" >&2; usage; exit 1 ;;
+	esac
+	shift
+done
+
+if [ -z "$REPO_NAME" ] && [ -n "$SLUG" ]; then
+	REPO_NAME=${SLUG##*/}
+fi
+if [ -z "$INSTANCE" ] && [ -n "$REPO_NAME" ]; then
+	INSTANCE=$REPO_NAME
+fi
+
+# --- preflight -------------------------------------------------------------
+step "preflight"
+[ "$(id -u)" = 0 ] || [ "$APPLY" = 0 ] || die "run with sudo (or pass no --apply for a dry run)"
+command -v systemctl >/dev/null || die "systemd is required"
+command -v curl >/dev/null || note "curl missing: the release download will fail"
+note "mode: $([ "$APPLY" = 1 ] && echo APPLY || echo 'dry run')"
+note "version: $VERSION"
+note "root: $ROOT"
+[ -n "$SLUG" ] && note "repo: $SLUG (bot $BOT)" || note "repo: none given — layout only"
+
+if [ "$APPLY" = 1 ] && [ -z "$SLUG" ]; then
+	die "--slug is required with --apply (it goes into config.toml)"
+fi
+if [ "$APPLY" = 1 ] && [ -z "$BOT" ]; then
+	die "--bot is required with --apply"
+fi
+
+# --- user and layout -------------------------------------------------------
+step "service user"
+if id "$AGENT_USER" >/dev/null 2>&1; then
+	note "user exists: $AGENT_USER"
+else
+	run useradd --system --create-home --shell /bin/bash "$AGENT_USER"
+	note "create system user $AGENT_USER"
+fi
+
+if [ "$DOCKER_GROUP" = 1 ] && getent group docker >/dev/null; then
+	if id -nG "$AGENT_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+		note "already in the docker group (needed by `make` targets that use compose)"
+	else
+		run usermod -aG docker "$AGENT_USER"
+		note "add $AGENT_USER to the docker group"
+	fi
+fi
+
+step "layout under $ROOT"
+for dir in "$ROOT" "$ROOT/repos" "$ROOT/work" "$ROOT/logs" "$ROOT/state"; do
+	run install -d -m 755 -o "$AGENT_USER" -g "$AGENT_GROUP" "$dir"
+done
+note "repos/ work/ logs/ state/"
+
+# --- binary ----------------------------------------------------------------
+step "binary"
+if [ -n "$LOCAL_BIN" ]; then
+	[ -f "$LOCAL_BIN" ] || die "no such binary: $LOCAL_BIN"
+	run install -m 755 "$LOCAL_BIN" "$PREFIX/issuewright"
+else
+	arch=$(uname -m)
+	case "$arch" in
+	x86_64) arch=amd64 ;;
+	aarch64 | arm64) arch=arm64 ;;
+	*) die "unsupported architecture $arch" ;;
+	esac
+	url="https://github.com/satheeshds/issuewright/releases/download/${VERSION}/issuewright-linux-${arch}"
+	note "download $url"
+	if [ "$APPLY" = 1 ]; then
+		tmp=$(mktemp)
+		curl -fsSL "$url" -o "$tmp" || die "download failed: $url"
+		install -m 755 "$tmp" "$PREFIX/issuewright"
+		rm -f "$tmp"
+	else
+		note "[dry-run] would download and install to $PREFIX/issuewright"
+	fi
+fi
+if [ "$APPLY" = 1 ]; then
+	"$PREFIX/issuewright" version || die "the installed binary does not run"
+fi
+
+# --- systemd units ---------------------------------------------------------
+step "systemd units"
+if [ "$APPLY" = 1 ]; then
+	"$PREFIX/issuewright" install --prefix "$PREFIX" >/dev/null
+	systemctl daemon-reload
+	note "installed issuewright@.service and issuewright@.timer"
+else
+	note "[dry-run] issuewright install --prefix $PREFIX && systemctl daemon-reload"
+fi
+
+# --- configuration ---------------------------------------------------------
+step "configuration"
+write_file "$ROOT/config.toml" 644 <<EOF
+# Written by deploy/provision.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ).
+# One [[repo]] block per repo. Repo-specific rules live in that repo's
+# .agent/agent.yaml, never here.
+[agent]
+workroot = "$ROOT/work"
+logdir   = "$ROOT/logs"
+repos_root = "$ROOT/repos"
+brain    = "pi"
+thinking = "high"
+max_run_minutes = 90
+poll_minutes    = 10
+
+[[repo]]
+name      = "${REPO_NAME:-CHANGEME}"
+path      = "$ROOT/repos/${REPO_NAME:-CHANGEME}"
+slug      = "${SLUG:-owner/CHANGEME}"
+bot       = "${BOT:-CHANGEME}"
+token_env = "GH_TOKEN"
+EOF
+
+write_file "$ROOT/agent.env" 600 <<'EOF'
+# Loaded by issuewright@<instance>.service. Mode 0600, owned by agent.
+# Set ONE of these: a GitHub App installation token, or a fine-grained PAT for a
+# bot account. Without a token the agent uses the machine's `gh auth login`.
+# GH_TOKEN=github_pat_...
+
+# Only for the exec brain:
+# AGENT_EXEC_COMMAND='mytool --dir {{WORKDIR}} --task {{PROMPT_FILE}}'
+EOF
+if [ "$APPLY" = 1 ]; then
+	chown "$AGENT_USER:$AGENT_GROUP" "$ROOT/agent.env" "$ROOT/config.toml"
+fi
+
+# --- toolchains ------------------------------------------------------------
+if [ "$SKIP_TOOLCHAINS" = 1 ]; then
+	step "toolchains skipped"
+else
+	step "toolchains (best effort; the agent's checks need these)"
+	for tool in go node npm gh jq pi opencode docker flutter; do
+		if command -v "$tool" >/dev/null; then
+			note "ok: $tool ($(command -v "$tool"))"
+		else
+			note "MISSING: $tool"
+		fi
+	done
+	cat <<'EOF'
+  Install what is missing, as the agent user:
+    Go        https://go.dev/dl/  (or the distro package)
+    Pi        npm install -g @earendil-works/pi-coding-agent
+              then: pi auth login            # subscription/provider credentials
+              and:  pi install https://github.com/monotykamary/pi-opencode-go-provider
+    opencode  npm install -g opencode-ai     (optional second brain)
+    Flutter   https://docs.flutter.dev/get-started/install/linux
+              (only needed if a repo's profile runs flutter checks)
+EOF
+fi
+
+# --- clone -----------------------------------------------------------------
+step "agent clone"
+clone="$ROOT/repos/${REPO_NAME:-CHANGEME}"
+if [ -d "$clone/.git" ]; then
+	note "clone exists: $clone"
+else
+	note "next: sudo -u $AGENT_USER git clone git@github.com:${SLUG:-owner/repo}.git $clone"
+	note "      (the agent must never use a deploy checkout)"
+fi
+
+# --- timer -----------------------------------------------------------------
+step "timer"
+if [ -n "$INSTANCE" ] && [ "$INSTANCE" != CHANGEME ]; then
+	if [ "$APPLY" = 1 ]; then
+		systemctl enable --now "issuewright@$INSTANCE.timer"
+		systemctl list-timers "issuewright@$INSTANCE.timer" --no-pager | head -3
+	else
+		note "[dry-run] systemctl enable --now issuewright@$INSTANCE.timer"
+	fi
+else
+	note "next: systemctl enable --now 'issuewright@<name>.timer'"
+fi
+
+# --- what a human must still do -------------------------------------------
+cat <<EOF
+
+== still yours to do
+  1. bot identity
+       a GitHub App (issues/contents/pull_requests: write, metadata: read),
+       installed on ${SLUG:-owner/repo}; or a PAT for a bot account.
+       Then, as $AGENT_USER:
+         sudo -u $AGENT_USER gh auth login        # or put GH_TOKEN in $ROOT/agent.env
+       The login must match the bot field in $ROOT/config.toml.
+  2. brain credentials
+         sudo -u $AGENT_USER pi auth login
+       Without this, every run blocks with an authentication error (which is
+       the intended behaviour: a brain that cannot think must not fake success).
+  3. the clone, if it is not there yet (printed above).
+  4. first run, by hand, before trusting the timer:
+         sudo -u $AGENT_USER issuewright run --repo ${REPO_NAME:-CHANGEME} --issue <n> --dry-run --verbose
+         sudo -u $AGENT_USER issuewright run --repo ${REPO_NAME:-CHANGEME} --issue <n>
+  5. the suspend window: this box sleeps 21:30-08:00. The timer is
+     Persistent=true, so a missed tick fires on wake; a run killed mid-flight
+     resumes with \`pi -c\` on the next tick.
+EOF
+
+step "done"
+if [ "$APPLY" = 0 ]; then
+	echo "  dry run only — re-run with --apply to make these changes"
+fi
