@@ -148,7 +148,7 @@ func TestMinterFailsHelpfully(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		"no app id":   {map[string]string{"GH_REPO": "acme/demo", "GH_APP_KEY": key}, "GH_APP_ID is required"},
+		"no app id":   {map[string]string{"GH_REPO": "acme/demo", "GH_APP_KEY": key}, "GH_APP_ID (or GH_APP_CLIENT_ID) is required"},
 		"no repo":     {map[string]string{"GH_APP_ID": "1", "GH_APP_KEY": key}, "GH_REPO is required"},
 		"no key file": {map[string]string{"GH_APP_ID": "1", "GH_APP_KEY": "/tmp/nope.pem", "GH_REPO": "acme/demo"}, "no private key"},
 	}

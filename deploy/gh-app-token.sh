@@ -16,7 +16,9 @@
 # Exit codes: 0 ok, 1 configuration error, 2 API or crypto failure.
 set -euo pipefail
 
-APP_ID=${GH_APP_ID:-}
+# GitHub accepts the App ID or the client ID as `iss`, and recommends the client
+# ID. Take whichever is configured.
+APP_ID=${GH_APP_CLIENT_ID:-${GH_APP_ID:-}}
 KEY=${GH_APP_KEY:-/srv/agent/gh-app.pem}
 REPO=${GH_REPO:-}
 OUT=${GH_TOKEN_FILE:-/srv/agent/token.env}
@@ -33,7 +35,8 @@ gh-app-token.sh [--print|--check]
   --check     exit 0 if the token in $GH_TOKEN_FILE is valid for >5 more minutes
 
 Environment:
-  GH_APP_ID        the App's numeric ID (required)
+  GH_APP_CLIENT_ID the App's client ID (preferred; GitHub recommends it for iss)
+  GH_APP_ID        the App's numeric ID (accepted alternative)
   GH_APP_KEY       path to the App's private key .pem (default /srv/agent/gh-app.pem)
   GH_REPO          owner/repo the App is installed on (required)
   GH_TOKEN_FILE    where to write GH_TOKEN=… (default /srv/agent/token.env)
@@ -118,7 +121,7 @@ if [ "$MODE" = --check ]; then
 fi
 
 # --- mint ------------------------------------------------------------------
-[ -n "$APP_ID" ] || die "GH_APP_ID is required (the App's numeric ID, not its name)" 1
+[ -n "$APP_ID" ] || die "GH_APP_ID (or GH_APP_CLIENT_ID) is required — the App's numeric ID or client ID, not its name" 1
 [ -n "$REPO" ] || die "GH_REPO is required (owner/repo)" 1
 [ -f "$KEY" ] || die "no private key at $KEY (download it from the App settings)" 1
 require_tools
