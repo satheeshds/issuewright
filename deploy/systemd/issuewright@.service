@@ -10,6 +10,9 @@ User=agent
 Group=agent
 WorkingDirectory=/srv/agent
 EnvironmentFile=/srv/agent/agent.env
+# Minted hourly by issuewright-token.timer when a GitHub App is used. Optional:
+# without a GH_TOKEN the units fall back to the machine's own `gh` login.
+EnvironmentFile=-/srv/agent/token.env
 # systemd gives units a minimal PATH. Toolchains installed for the agent user
 # (go, pi, opencode, flutter) are invisible unless PATH says so; agent.env can
 # override this line.

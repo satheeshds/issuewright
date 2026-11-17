@@ -1,0 +1,12 @@
+[Unit]
+Description=issuewright: refresh the GitHub App token every 30 minutes
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=60s
+Unit=issuewright-token.service
+
+[Install]
+WantedBy=timers.target

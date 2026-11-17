@@ -1,0 +1,18 @@
+[Unit]
+Description=issuewright: mint a GitHub App installation token
+Documentation=https://github.com/satheeshds/issuewright/blob/main/docs/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# The script writes GH_TOKEN=… (0600, owned by the agent user) for the units that
+# need it. App installation tokens live one hour; the timer runs every 30 minutes.
+EnvironmentFile=/srv/agent/gh-app.env
+ExecStart=/srv/agent/bin/gh-app-token.sh
+TimeoutStartSec=60s
+PrivateTmp=yes
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal

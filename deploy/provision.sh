@@ -29,6 +29,9 @@ SKIP_TOOLCHAINS=0
 DOCKER_GROUP=1
 COPY_PI_AUTH_FROM=""
 CLONE=1
+GH_APP_ID=""
+GH_APP_KEY=""
+SET_BOT=""
 
 usage() {
 	cat <<'USAGE'
@@ -47,6 +50,9 @@ provision.sh [--apply] [options]
   --copy-pi-auth-from USER
                           copy that user's Pi credentials and settings to the
                           agent user (explicit: it copies a secret)
+  --gh-app-id N           GitHub App ID: install the token minter + its timer
+  --gh-app-key PATH       the App's private key, already on this machine
+  --set-bot LOGIN         rewrite the bot login in an existing config.toml
   --no-clone              do not create the agent's clone of the repo
   --no-docker-group       do not add the agent user to the docker group
   -h, --help              this text
@@ -100,6 +106,9 @@ while [ $# -gt 0 ]; do
 	--local-bin) LOCAL_BIN=${2:?--local-bin needs a value}; shift ;;
 	--skip-toolchains) SKIP_TOOLCHAINS=1 ;;
 	--copy-pi-auth-from) COPY_PI_AUTH_FROM=${2:?--copy-pi-auth-from needs a user}; shift ;;
+	--gh-app-id) GH_APP_ID=${2:?--gh-app-id needs a value}; shift ;;
+	--gh-app-key) GH_APP_KEY=${2:?--gh-app-key needs a value}; shift ;;
+	--set-bot) SET_BOT=${2:?--set-bot needs a login}; shift ;;
 	--no-clone) CLONE=0 ;;
 	--no-docker-group) DOCKER_GROUP=0 ;;
 	-h | --help) usage; exit 0 ;;
@@ -255,6 +264,56 @@ cat >/dev/null <<'EOF'
 EOF
 if [ "$APPLY" = 1 ]; then
 	chown "$AGENT_USER:$AGENT_GROUP" "$ROOT/agent.env" "$ROOT/config.toml"
+fi
+
+# --- update the bot login in place ----------------------------------------
+if [ -n "$SET_BOT" ] && [ -f "$ROOT/config.toml" ]; then
+	step "bot login"
+	if [ "$APPLY" = 1 ]; then
+		sed -i "s|^bot[[:space:]]*=.*|bot       = \"$SET_BOT\"|" "$ROOT/config.toml"
+		note "bot = \"$SET_BOT\""
+	else
+		note "[dry-run] set bot = \"$SET_BOT\" in $ROOT/config.toml"
+	fi
+fi
+
+# --- GitHub App token minter ----------------------------------------------
+if [ -n "$GH_APP_ID" ]; then
+	step "GitHub App token"
+	[ -n "$GH_APP_KEY" ] || die "--gh-app-id needs --gh-app-key" 1
+	[ -f "$GH_APP_KEY" ] || die "no private key at $GH_APP_KEY" 1
+	[ -n "$SLUG" ] || die "--gh-app-id needs --slug" 1
+
+	# The minting script is a sibling of this one in the release tree; fetch it at
+	# the same tag so both are the same version.
+	script_url="https://raw.githubusercontent.com/satheeshds/issuewright/$VERSION/deploy/gh-app-token.sh"
+	note "install $ROOT/bin/gh-app-token.sh"
+	if [ "$APPLY" = 1 ]; then
+		curl -fsSL "$script_url" -o "$ROOT/bin/gh-app-token.sh" ||
+			die "could not download $script_url" 2
+		chmod 755 "$ROOT/bin/gh-app-token.sh"
+		install -m 600 -o root -g root "$GH_APP_KEY" "$ROOT/gh-app.pem"
+	fi
+
+	write_file "$ROOT/gh-app.env" 600 <<EOF2
+# Read by issuewright-token.service (root). App installation tokens live 1 hour;
+# the timer mints a fresh one every 30 minutes into GH_TOKEN_FILE.
+GH_APP_ID=$GH_APP_ID
+GH_APP_KEY=$ROOT/gh-app.pem
+GH_REPO=$SLUG
+GH_TOKEN_FILE=$ROOT/token.env
+GH_TOKEN_OWNER=$AGENT_USER
+EOF2
+
+	note "mint one token now"
+	if [ "$APPLY" = 1 ]; then
+		"$ROOT/bin/gh-app-token.sh" || note "WARNING: minting failed; check the App ID, key and installation"
+		systemctl daemon-reload
+		systemctl enable --now issuewright-token.timer
+		note "issuewright-token.timer enabled (every 30 minutes)"
+	else
+		note "[dry-run] $ROOT/bin/gh-app-token.sh && systemctl enable --now issuewright-token.timer"
+	fi
 fi
 
 # --- toolchains ------------------------------------------------------------
