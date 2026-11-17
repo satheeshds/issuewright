@@ -198,3 +198,22 @@ func TestProvisionWithoutTokenExplainsTheClone(t *testing.T) {
 		t.Errorf("the clone step must say what it needs:\n%s", out)
 	}
 }
+
+// `sudo -u agent pi ...` fails because sudo resets PATH to secure_path, which
+// does not include /srv/agent/bin. The script must both fix that for interactive
+// shells and print a command that actually works.
+func TestProvisionMakesPiReachableForTheServiceUser(t *testing.T) {
+	out, code := runScript(t, "--slug", "acme/demo", "--bot", "bot")
+	if code != 0 {
+		t.Fatalf("dry run failed (%d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "shell PATH for agent") || !strings.Contains(out, ".bashrc") {
+		t.Errorf("the service user's shell PATH is not handled:\n%s", out)
+	}
+	if !strings.Contains(out, "env PATH=/srv/agent/bin:/usr/local/bin:/usr/bin:/bin pi auth login") {
+		t.Errorf("the printed login command would still fail with 'command not found':\n%s", out)
+	}
+	if strings.Contains(out, "(plain  fails") {
+		t.Error("the instructions lost their wording to shell expansion")
+	}
+}

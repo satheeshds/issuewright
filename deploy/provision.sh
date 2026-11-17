@@ -193,6 +193,24 @@ else
 	note "[dry-run] issuewright install --prefix $PREFIX && systemctl daemon-reload"
 fi
 
+# --- shell PATH for the service user ---------------------------------------
+step "shell PATH for $AGENT_USER"
+agent_home_profile=$(getent passwd "$AGENT_USER" | cut -d: -f6 || true)
+[ -n "$agent_home_profile" ] || agent_home_profile=/home/$AGENT_USER
+marker="# issuewright: toolchain PATH"
+if [ -f "$agent_home_profile/.bashrc" ] && grep -q "$marker" "$agent_home_profile/.bashrc" 2>/dev/null; then
+	note "already present: $agent_home_profile/.bashrc"
+else
+	if [ "$APPLY" = 1 ]; then
+		printf '\n%s\nexport PATH=%s/bin:$HOME/.local/bin:$PATH\n' "$marker" "$ROOT" \
+			>>"$agent_home_profile/.bashrc"
+		chown "$AGENT_USER:$AGENT_GROUP" "$agent_home_profile/.bashrc"
+		note "added $ROOT/bin to $agent_home_profile/.bashrc"
+	else
+		note "[dry-run] appended $ROOT/bin to $agent_home_profile/.bashrc"
+	fi
+fi
+
 # --- configuration ---------------------------------------------------------
 step "configuration"
 write_file "$ROOT/config.toml" 644 <<EOF
@@ -272,6 +290,14 @@ else
 			fi
 		done
 		# The provider extension lives in the user's Pi config, not the prefix.
+		if [ "$APPLY" = 1 ]; then
+			if sudo -u "$AGENT_USER" env HOME="$agent_home" PATH="$ROOT/bin:$PATH" \
+				pi --version >/dev/null 2>&1; then
+				note "verified: pi runs as $AGENT_USER"
+			else
+				note "WARNING: pi does not run as $AGENT_USER; check $ROOT/bin"
+			fi
+		fi
 		note "add the opencode-go provider to $AGENT_USER's Pi config"
 		if [ "$APPLY" = 1 ]; then
 			sudo -u "$AGENT_USER" env HOME="$agent_home" PATH="$ROOT/bin:$PATH" \
@@ -367,10 +393,15 @@ cat <<EOF
        a GitHub App (issues/contents/pull_requests: write, metadata: read),
        installed on ${SLUG:-owner/repo}; or a PAT for a bot account.
        Then, as $AGENT_USER:
-         sudo -u $AGENT_USER gh auth login        # or put GH_TOKEN in $ROOT/agent.env
+         sudo -u $AGENT_USER -H gh auth login     # or put GH_TOKEN in $ROOT/agent.env
+       (with GH_TOKEN in agent.env, re-running this script clones the repo)
        The login must match the bot field in $ROOT/config.toml.
   2. brain credentials
-         sudo -u $AGENT_USER pi auth login
+         sudo -u $AGENT_USER -H env PATH=$ROOT/bin:/usr/local/bin:/usr/bin:/bin pi auth login
+       (plain "sudo -u $AGENT_USER pi" fails: sudo's secure_path does not include
+        $ROOT/bin. "sudo -u $AGENT_USER -i" works too, now that .bashrc has it.)
+       Or copy yours instead of logging in again:
+         --copy-pi-auth-from <your-user>
        Without this, every run blocks with an authentication error (which is
        the intended behaviour: a brain that cannot think must not fake success).
   3. the clone, if it is not there yet (printed above).
