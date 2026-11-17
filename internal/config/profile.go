@@ -50,6 +50,11 @@ type Check struct {
 	// Drift lists paths that only tooling may change. After a check's Run
 	// commands execute, any hand change under Drift fails the check.
 	Drift []string `yaml:"drift"`
+	// Advisory marks a check whose failure is reported but does not block the
+	// run. Use it for a suite with a red baseline you have not fixed yet: an
+	// agent should not be blocked by failures it did not cause, and hiding the
+	// suite entirely would lose the signal.
+	Advisory bool `yaml:"advisory"`
 }
 
 // Protect is the set of hard rules the runner enforces rather than asks for.
@@ -309,6 +314,9 @@ func (p *Profile) MarshalYAML() ([]byte, error) {
 			}
 			if len(c.Drift) > 0 {
 				fmt.Fprintf(&b, "    drift: [%s]\n", quoteList(c.Drift))
+			}
+			if c.Advisory {
+				b.WriteString("    advisory: true          # failures are reported, not blocking\n")
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/satheeshds/issuewright/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMatchGlobs(t *testing.T) {
@@ -226,3 +227,57 @@ func TestSummaryAndFailed(t *testing.T) {
 		t.Error("empty summary should say so")
 	}
 }
+
+func TestAdvisoryChecksAreReportedNotBlocking(t *testing.T) {
+	dir := t.TempDir()
+	r := New(Options{Dir: dir})
+	advisory := r.RunCheck(context.Background(), config.Check{
+		Name: "baseline-red", Advisory: true, Run: []string{"echo 33 tests failed; exit 1"},
+	})
+	blocking := r.RunCheck(context.Background(), config.Check{
+		Name: "must-pass", Run: []string{"true"},
+	})
+	results := []Result{advisory, blocking}
+	if Failed(results) {
+		t.Fatal("an advisory failure must not fail the run")
+	}
+	if advisory.OK {
+		t.Error("an advisory check that failed must still report OK=false")
+	}
+	summary := Summary(results)
+	if !strings.Contains(summary, "⚠️ `baseline-red` (advisory") {
+		t.Errorf("summary should mark the advisory failure: %q", summary)
+	}
+	if !strings.Contains(summary, "✅ `must-pass`") {
+		t.Errorf("summary lost the passing check: %q", summary)
+	}
+
+	// A real failure still blocks.
+	if !Failed([]Result{blocking, {Name: "hard", Failures: []string{"boom"}}}) {
+		t.Error("a non-advisory failure must block")
+	}
+}
+
+func TestAdvisorySurvivesProfileParsing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte(`
+version: 1
+checks:
+  - name: mobile
+    paths: ["**/*.dart"]
+    run: ["flutter test"]
+    advisory: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prof := &config.Profile{}
+	raw, _ := os.ReadFile(filepath.Join(dir, "agent.yaml"))
+	if err := yamlUnmarshal(raw, prof); err != nil {
+		t.Fatal(err)
+	}
+	if len(prof.Checks) != 1 || !prof.Checks[0].Advisory {
+		t.Fatalf("advisory not parsed: %+v", prof.Checks)
+	}
+}
+
+func yamlUnmarshal(raw []byte, v any) error { return yaml.Unmarshal(raw, v) }

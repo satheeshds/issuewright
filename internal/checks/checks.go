@@ -64,6 +64,8 @@ type Result struct {
 	Name     string
 	Commands []string
 	OK       bool
+	// Advisory failures are reported in the PR body but do not block the run.
+	Advisory bool
 	// Failures holds one entry per reason the check failed.
 	Failures []string
 	Duration time.Duration
@@ -73,7 +75,7 @@ type Result struct {
 // then applies the drift gate.
 func (r *Runner) RunCheck(ctx context.Context, c config.Check) Result {
 	start := time.Now()
-	res := Result{Name: c.Name, Commands: c.Run}
+	res := Result{Name: c.Name, Commands: c.Run, Advisory: c.Advisory}
 
 	for _, cmd := range c.Run {
 		output, err := r.shell(ctx, cmd)
@@ -176,10 +178,11 @@ func (r *Runner) RunAll(ctx context.Context, selected []config.Check) []Result {
 	return results
 }
 
-// Failed reports whether any result failed.
+// Failed reports whether any blocking check failed. Advisory checks are reported
+// but never fail a run.
 func Failed(results []Result) bool {
 	for _, r := range results {
-		if !r.OK {
+		if !r.OK && !r.Advisory {
 			return true
 		}
 	}
@@ -196,6 +199,11 @@ func Summary(results []Result) string {
 		switch {
 		case r.OK:
 			fmt.Fprintf(&b, "- ✅ `%s` — %s\n", r.Name, strings.Join(r.Commands, " && "))
+		case r.Advisory:
+			fmt.Fprintf(&b, "- ⚠️ `%s` (advisory — the repo's own baseline fails this; it does not block)\n", r.Name)
+			for _, f := range r.Failures {
+				fmt.Fprintf(&b, "  - %s\n", f)
+			}
 		default:
 			fmt.Fprintf(&b, "- ❌ `%s`\n", r.Name)
 			for _, f := range r.Failures {

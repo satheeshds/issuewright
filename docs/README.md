@@ -178,6 +178,11 @@ protect:
   actually executed, not by asking it nicely in the prompt.
 - `secret_paths` blocks publishing a diff that touches them.
 
+A check can be `advisory: true` when the repo's own baseline is red (a test suite
+with 33 known failures, an analyzer with 186 infos). Its result is still reported
+in the PR body — marked ⚠️ — but it does not block the run. Use it instead of
+deleting the check, and instead of pretending the baseline is green.
+
 Everything in the profile is optional. A repo with no profile runs on detected
 defaults — that is the point of `init` being an upgrade rather than an entry fee.
 
