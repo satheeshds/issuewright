@@ -265,3 +265,63 @@ func TestCleanupRemovesOnlyMergedWorktrees(t *testing.T) {
 		t.Errorf("merged worktree still present: %v", err)
 	}
 }
+
+// The clone is how a profile edit on the base branch reaches the runner, so it
+// has to advance. A real pilot missed exactly this: the profile said "advisory
+// check" on origin/main while the clone sat on the old commit and blocked a run.
+func TestEnsureCloneAdvancesToBaseBranch(t *testing.T) {
+	m, bare := newManager(t)
+	ctx := context.Background()
+	if err := m.EnsureClone(ctx, "acme/demo"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Someone moves the base branch forward: add a commit in a temp clone.
+	work := filepath.Join(t.TempDir(), "pusher")
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(filepath.Dir(work), "clone", "-q", bare, work)
+	run(work, "checkout", "-q", "main")
+	if err := os.WriteFile(filepath.Join(work, "PROFILE"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(work, "add", "-A")
+	run(work, "commit", "-qm", "profile v2")
+	run(work, "push", "-q", "origin", "main")
+
+	if err := m.EnsureClone(ctx, "acme/demo"); err != nil {
+		t.Fatalf("second EnsureClone: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(m.CloneDir(), "PROFILE"))
+	if err != nil || string(raw) != "v2\n" {
+		t.Fatalf("clone did not advance to origin/main: %v %q", err, raw)
+	}
+}
+
+// A dirty clone is the human's, not ours: refuse loudly instead of resetting.
+func TestEnsureCloneRefusesToDestroyLocalChanges(t *testing.T) {
+	m, _ := newManager(t)
+	ctx := context.Background()
+	if err := m.EnsureClone(ctx, "acme/demo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(m.CloneDir(), "scratch.txt"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := m.EnsureClone(ctx, "acme/demo")
+	if err == nil || !strings.Contains(err.Error(), "local changes") {
+		t.Fatalf("dirty clone error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(m.CloneDir(), "scratch.txt")); statErr != nil {
+		t.Error("the dirty file was deleted")
+	}
+}

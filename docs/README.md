@@ -216,6 +216,14 @@ workflows:
    `agent:blocked`, one comment with the reason, and the bot unassigned so it is
    not retried by accident.
 
+### The agent's clone
+
+The clone under `/srv/agent/repos/<repo>` is not a workspace — worktrees do the
+work — so every tick fetches it and fast-forwards it to `origin/<base_branch>`.
+That is how a profile edit on the base branch reaches the runner. A clone with
+local changes is left alone and the run is refused loudly, because silently
+resetting it would delete someone's work.
+
 ### Resuming after an interruption
 
 The branch and the worktree are the checkpoint. A tick that was killed mid-run

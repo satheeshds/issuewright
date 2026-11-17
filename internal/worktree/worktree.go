@@ -112,7 +112,54 @@ func (m *Manager) EnsureClone(ctx context.Context, slug string) error {
 	if _, err := m.git(ctx, m.opt.CloneDir, "fetch", "--prune", "origin"); err != nil {
 		return err
 	}
+	return m.syncClone(ctx)
+}
+
+// syncClone advances the clone to the base branch, but only when its tree is
+// clean and it is not already there. The clone is not a workspace — worktrees do
+// the work — so keeping it current is how a profile edit on the base branch
+// reaches the runner. A dirty clone is left alone (someone is inspecting it) and
+// reported, because silently resetting would delete their work.
+func (m *Manager) syncClone(ctx context.Context) error {
+	status, err := m.git(ctx, m.opt.CloneDir, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("agent clone %s has local changes; refusing to update it (commit or discard them): %s",
+			m.opt.CloneDir, firstLines(status, 3))
+	}
+	head, err := m.git(ctx, m.opt.CloneDir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	target := "origin/" + m.opt.BaseBranch
+	want, err := m.git(ctx, m.opt.CloneDir, "rev-parse", target)
+	if err != nil {
+		return err
+	}
+	have, err := m.git(ctx, m.opt.CloneDir, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(have) == strings.TrimSpace(want) && strings.TrimSpace(head) == m.opt.BaseBranch {
+		return nil
+	}
+	if _, err := m.git(ctx, m.opt.CloneDir, "checkout", "-q", m.opt.BaseBranch); err != nil {
+		return fmt.Errorf("check out %s in the agent clone: %w", m.opt.BaseBranch, err)
+	}
+	if _, err := m.git(ctx, m.opt.CloneDir, "reset", "-q", "--hard", target); err != nil {
+		return fmt.Errorf("advance the agent clone to %s: %w", target, err)
+	}
 	return nil
+}
+
+func firstLines(s string, n int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "; ")
 }
 
 // EnsureIssue prepares (or resumes) the worktree for an issue.
