@@ -65,6 +65,11 @@ func newHarness(t *testing.T) *harness {
 	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The profile preamble is a committed file in a real repo; committing it here
+	// keeps the clone clean, which EnsureClone requires before it advances.
+	if err := os.WriteFile(filepath.Join(seed, "AGENT_RULES.md"), []byte("repo rules: be careful\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	gitRun(t, seed, "add", "-A")
 	gitRun(t, seed, "commit", "-qm", "initial")
 	gitRun(t, root, "init", "-q", "--bare", bare)
@@ -79,9 +84,6 @@ func newHarness(t *testing.T) *harness {
 	prof.Protect.NeverRun = []string{"make migrate"}
 	prof.Protect.SecretPaths = []string{".env", ".env.*"}
 	prof.Prompt.PreambleFile = "AGENT_RULES.md"
-	if err := os.WriteFile(filepath.Join(clone, "AGENT_RULES.md"), []byte("repo rules: be careful\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	h := &harness{
 		t: t, bare: bare, cloneDir: clone, gh: github.NewFake(), profile: prof,
