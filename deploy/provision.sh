@@ -27,6 +27,8 @@ INSTANCE=""
 LOCAL_BIN=""
 SKIP_TOOLCHAINS=0
 DOCKER_GROUP=1
+COPY_PI_AUTH_FROM=""
+CLONE=1
 
 usage() {
 	cat <<'USAGE'
@@ -41,7 +43,11 @@ provision.sh [--apply] [options]
   --prefix DIR            install the binary here (default: /usr/local/bin)
   --root DIR              state root (default: /srv/agent)
   --local-bin PATH        use this binary instead of downloading a release
-  --skip-toolchains       do not try to install go/pi/opencode
+  --skip-toolchains       do not install pi/opencode for the agent user
+  --copy-pi-auth-from USER
+                          copy that user's Pi credentials and settings to the
+                          agent user (explicit: it copies a secret)
+  --no-clone              do not create the agent's clone of the repo
   --no-docker-group       do not add the agent user to the docker group
   -h, --help              this text
 
@@ -93,6 +99,8 @@ while [ $# -gt 0 ]; do
 	--root) ROOT=${2:?--root needs a value}; shift ;;
 	--local-bin) LOCAL_BIN=${2:?--local-bin needs a value}; shift ;;
 	--skip-toolchains) SKIP_TOOLCHAINS=1 ;;
+	--copy-pi-auth-from) COPY_PI_AUTH_FROM=${2:?--copy-pi-auth-from needs a user}; shift ;;
+	--no-clone) CLONE=0 ;;
 	--no-docker-group) DOCKER_GROUP=0 ;;
 	-h | --help) usage; exit 0 ;;
 	*) echo "provision: unknown argument $1" >&2; usage; exit 1 ;;
@@ -214,9 +222,15 @@ write_file "$ROOT/agent.env" 600 <<'EOF'
 # bot account. Without a token the agent uses the machine's `gh auth login`.
 # GH_TOKEN=github_pat_...
 
-# systemd units get a minimal PATH. Extend it with wherever the toolchains live,
-# or every check will fail with "flutter: not found".
-# PATH=/usr/local/bin:/usr/bin:/bin:/srv/agent/bin
+# systemd units get a minimal PATH. Add wherever go/flutter live, or every check
+# that needs them fails with "not found".
+EOF
+if [ "$APPLY" = 1 ]; then
+	printf 'PATH=/usr/local/bin:/usr/bin:/bin:%s/bin\n' "$ROOT" >>"$ROOT/agent.env"
+else
+	note "[dry-run] would append PATH=/usr/local/bin:/usr/bin:/bin:$ROOT/bin to agent.env"
+fi
+cat >/dev/null <<'EOF'
 
 # Only for the exec brain:
 # AGENT_EXEC_COMMAND='mytool --dir {{WORKDIR}} --task {{PROMPT_FILE}}'
@@ -229,34 +243,107 @@ fi
 if [ "$SKIP_TOOLCHAINS" = 1 ]; then
 	step "toolchains skipped"
 else
-	step "toolchains (best effort; the agent's checks need these)"
-	for tool in go node npm gh jq pi opencode docker flutter; do
+	step "toolchains for the $AGENT_USER user"
+	# Host-level tools the agent's checks call. These are multi-GB or distro
+	# packages, so they are reported rather than installed behind your back.
+	for tool in go flutter docker gh jq node npm; do
 		if command -v "$tool" >/dev/null; then
-			note "ok: $tool ($(command -v "$tool"))"
+			note "host ok: $tool ($(command -v "$tool"))"
 		else
-			note "MISSING: $tool"
+			note "host MISSING: $tool — the checks that need it will fail"
 		fi
 	done
-	cat <<'EOF'
-  Install what is missing, as the agent user:
-    Go        https://go.dev/dl/  (or the distro package)
-    Pi        npm install -g @earendil-works/pi-coding-agent
-              then: pi auth login            # subscription/provider credentials
-              and:  pi install https://github.com/monotykamary/pi-opencode-go-provider
-    opencode  npm install -g opencode-ai     (optional second brain)
-    Flutter   https://docs.flutter.dev/get-started/install/linux
-              (only needed if a repo's profile runs flutter checks)
-EOF
+
+	# The brains are npm packages: install them for the service user, into a
+	# prefix the unit's PATH already covers ($ROOT/bin).
+	if command -v npm >/dev/null; then
+		agent_home=$(getent passwd "$AGENT_USER" | cut -d: -f6 || true)
+		[ -n "$agent_home" ] || agent_home=/home/$AGENT_USER
+		for pkg in "@earendil-works/pi-coding-agent" "opencode-ai"; do
+			if [ -x "$ROOT/bin/${pkg##*/}" ] || [ -x "$agent_home/.local/bin/${pkg##*/}" ]; then
+				note "already installed: ${pkg##*/}"
+				continue
+			fi
+			note "install $pkg for $AGENT_USER (npm -g --prefix $ROOT)"
+			if [ "$APPLY" = 1 ]; then
+				sudo -u "$AGENT_USER" env HOME="$agent_home" npm install -g 					--prefix "$ROOT" --allow-scripts=opencode-ai --allow-scripts=@google/genai,protobufjs 					"$pkg" || note "WARNING: installing $pkg failed; install it by hand"
+			else
+				note "[dry-run] sudo -u $AGENT_USER npm install -g --prefix $ROOT $pkg"
+			fi
+		done
+		# The provider extension lives in the user's Pi config, not the prefix.
+		note "add the opencode-go provider to $AGENT_USER's Pi config"
+		if [ "$APPLY" = 1 ]; then
+			sudo -u "$AGENT_USER" env HOME="$agent_home" PATH="$ROOT/bin:$PATH" \
+				pi install https://github.com/monotykamary/pi-opencode-go-provider ||
+				note "WARNING: provider install failed (needs network + npm)"
+		else
+			note "[dry-run] sudo -u $AGENT_USER pi install https://github.com/monotykamary/pi-opencode-go-provider"
+		fi
+	else
+		note "npm missing: cannot install the brains; install node/npm first"
+	fi
+fi
+
+# --- Pi credentials for the agent user -------------------------------------
+if [ -n "$COPY_PI_AUTH_FROM" ]; then
+	step "Pi credentials from $COPY_PI_AUTH_FROM"
+	src_home=$(getent passwd "$COPY_PI_AUTH_FROM" | cut -d: -f6 || true)
+	[ -n "$src_home" ] || die "no such user: $COPY_PI_AUTH_FROM"
+	agent_home=$(getent passwd "$AGENT_USER" | cut -d: -f6 || true)
+	[ -n "$agent_home" ] || agent_home=/home/$AGENT_USER
+	note "copying $src_home/.pi/agent/{auth.json,settings.json,git,npm} → $agent_home/.pi/agent"
+	note "this hands the $AGENT_USER user your model-subscription credentials (0600)"
+	if [ "$APPLY" = 1 ]; then
+		sudo -u root install -d -m 700 -o "$AGENT_USER" -g "$AGENT_GROUP" "$agent_home/.pi/agent"
+		for item in auth.json settings.json git npm; do
+			[ -e "$src_home/.pi/agent/$item" ] || continue
+			cp -a "$src_home/.pi/agent/$item" "$agent_home/.pi/agent/"
+		done
+		chown -R "$AGENT_USER:$AGENT_GROUP" "$agent_home/.pi/agent"
+		chmod 600 "$agent_home/.pi/agent/auth.json" 2>/dev/null || true
+		note "copied; revoke by deleting $agent_home/.pi/agent/auth.json"
+	else
+		note "[dry-run] would copy those files and chown them to $AGENT_USER"
+	fi
+else
+	step "Pi credentials"
+	note "none copied. Give the brain credentials one of two ways:"
+	note "  sudo -u $AGENT_USER pi auth login                       (interactive)"
+	note "  --copy-pi-auth-from \$USER                              (copy yours)"
 fi
 
 # --- clone -----------------------------------------------------------------
 step "agent clone"
 clone="$ROOT/repos/${REPO_NAME:-CHANGEME}"
+token=""
+if [ -f "$ROOT/agent.env" ]; then
+	# Read GH_TOKEN from agent.env when the operator put one there; never printed.
+	token=$(grep -E '^GH_TOKEN=' "$ROOT/agent.env" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+fi
 if [ -d "$clone/.git" ]; then
 	note "clone exists: $clone"
+elif [ "$CLONE" = 0 ]; then
+	note "skipped (--no-clone). The agent must never use a deploy checkout."
+elif [ -z "$SLUG" ]; then
+	note "no --slug given; not cloning"
+elif [ -z "$token" ]; then
+	note "no GH_TOKEN in $ROOT/agent.env, so the clone needs credentials first:"
+	note "  sudo -u $AGENT_USER gh auth login && sudo -u $AGENT_USER git clone https://github.com/$SLUG.git $clone"
 else
-	note "next: sudo -u $AGENT_USER git clone git@github.com:${SLUG:-owner/repo}.git $clone"
-	note "      (the agent must never use a deploy checkout)"
+	agent_home=$(getent passwd "$AGENT_USER" | cut -d: -f6 || true)
+	[ -n "$agent_home" ] || agent_home=/home/$AGENT_USER
+	note "clone https://github.com/$SLUG.git as $AGENT_USER (using the token in agent.env, not printed)"
+	if [ "$APPLY" = 1 ]; then
+		sudo -u "$AGENT_USER" env HOME="$agent_home" GH_TOKEN="$token" 			git clone --quiet "https://github.com/$SLUG.git" "$clone" &&
+			note "cloned $clone" ||
+			note "WARNING: clone failed — check the token's repo access"
+		# Make later fetches/pushes use the same token.
+		sudo -u "$AGENT_USER" env HOME="$agent_home" 			git config --global "credential.https://github.com.helper" \
+			'!/usr/bin/gh auth git-credential' 2>/dev/null || true
+	else
+		note "[dry-run] would clone into $clone"
+	fi
 fi
 
 # --- timer -----------------------------------------------------------------

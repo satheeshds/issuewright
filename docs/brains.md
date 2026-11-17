@@ -59,6 +59,21 @@ Two rules make the seam honest:
 `issuewright list brains` prints the same table from the registry, so the docs
 cannot rot without a test noticing.
 
+## Two identities, often confused
+
+- **GitHub identity** — who comments, pushes, and opens PRs. That is `GH_TOKEN`
+  (an App installation token or a bot account's PAT) and the `bot` field in the
+  fleet config. Pi has nothing to do with it.
+- **Model identity** — whose subscription pays for the tokens. That is the
+  credentials in the *service user's* `~/.pi/agent/auth.json`, written by
+  `pi auth login` as that user. If the agent runs as `agent`, the Pi login in
+  your own home directory is invisible to it.
+
+`deploy/provision.sh --copy-pi-auth-from $USER` copies `auth.json`,
+`settings.json`, and the installed Pi packages to the service user (0600) so the
+first run works without an interactive login; deleting that `auth.json` revokes
+it.
+
 ## Choosing one
 
 Most specific wins:

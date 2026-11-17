@@ -134,3 +134,67 @@ func extractBlock(t *testing.T, out, marker string) string {
 	}
 	return strings.Join(block, "\n") + "\n"
 }
+
+func TestProvisionInstallsBrainsForTheServiceUser(t *testing.T) {
+	out, code := runScript(t, "--slug", "acme/demo", "--bot", "bot")
+	if code != 0 {
+		t.Fatalf("dry run failed (%d):\n%s", code, out)
+	}
+	for _, want := range []string{
+		"toolchains for the agent user",
+		"install @earendil-works/pi-coding-agent for agent",
+		"install opencode-ai for agent",
+		"pi install https://github.com/monotykamary/pi-opencode-go-provider",
+		"none copied",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("toolchain section missing %q:\n%s", want, out)
+		}
+	}
+	// Host tools are reported but never installed behind the operator's back.
+	if strings.Contains(out, "apt-get install") || strings.Contains(out, "tarball") {
+		t.Error("host toolchains should be reported, not installed silently")
+	}
+}
+
+func TestProvisionCopiesPiCredentialsOnlyOnRequest(t *testing.T) {
+	out, code := runScript(t, "--slug", "acme/demo", "--bot", "bot", "--copy-pi-auth-from", "nosuchuser98765")
+	if code == 0 {
+		t.Fatalf("an unknown user must fail:\n%s", out)
+	}
+	if !strings.Contains(out, "no such user") {
+		t.Errorf("error should name the missing user:\n%s", out)
+	}
+
+	if _, code := runScript(t, "--copy-pi-auth-from"); code != 1 {
+		t.Errorf("a flag without a value should be a usage error, got %d", code)
+	}
+}
+
+func TestProvisionNeverPrintsTheToken(t *testing.T) {
+	root := t.TempDir()
+	secret := "github_pat_DO_NOT_PRINT_ME"
+	if err := os.WriteFile(filepath.Join(root, "agent.env"), []byte("GH_TOKEN="+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runScript(t, "--slug", "acme/demo", "--bot", "bot", "--root", root)
+	if code != 0 {
+		t.Fatalf("dry run failed (%d):\n%s", code, out)
+	}
+	if strings.Contains(out, secret) {
+		t.Error("the provisioning output leaked GH_TOKEN")
+	}
+	if !strings.Contains(out, "would clone into") {
+		t.Errorf("with a token present it should plan the clone:\n%s", out)
+	}
+}
+
+func TestProvisionWithoutTokenExplainsTheClone(t *testing.T) {
+	out, code := runScript(t, "--slug", "acme/demo", "--bot", "bot")
+	if code != 0 {
+		t.Fatalf("dry run failed (%d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "no GH_TOKEN") || !strings.Contains(out, "git clone https://github.com/acme/demo.git") {
+		t.Errorf("the clone step must say what it needs:\n%s", out)
+	}
+}
