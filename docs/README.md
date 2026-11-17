@@ -88,6 +88,10 @@ sudo install -m600 -o agent -g agent agent.env /srv/agent/agent.env
 # Token for the bot identity (a GitHub App installation token or a PAT).
 GH_TOKEN=github_pat_...
 
+# systemd gives a unit a minimal PATH. If go/flutter/pi live outside
+# /usr/local/bin:/usr/bin:/bin, say so here or every check fails with 127.
+PATH=/usr/local/bin:/usr/bin:/bin:/srv/agent/bin
+
 # Only needed for the exec brain.
 # AGENT_EXEC_COMMAND='mytool --dir {{WORKDIR}} --task {{PROMPT_FILE}}'
 

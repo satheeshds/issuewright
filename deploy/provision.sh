@@ -214,6 +214,10 @@ write_file "$ROOT/agent.env" 600 <<'EOF'
 # bot account. Without a token the agent uses the machine's `gh auth login`.
 # GH_TOKEN=github_pat_...
 
+# systemd units get a minimal PATH. Extend it with wherever the toolchains live,
+# or every check will fail with "flutter: not found".
+# PATH=/usr/local/bin:/usr/bin:/bin:/srv/agent/bin
+
 # Only for the exec brain:
 # AGENT_EXEC_COMMAND='mytool --dir {{WORKDIR}} --task {{PROMPT_FILE}}'
 EOF

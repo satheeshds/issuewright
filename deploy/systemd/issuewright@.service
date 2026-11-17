@@ -10,6 +10,10 @@ User=agent
 Group=agent
 WorkingDirectory=/srv/agent
 EnvironmentFile=/srv/agent/agent.env
+# systemd gives units a minimal PATH. Toolchains installed for the agent user
+# (go, pi, opencode, flutter) are invisible unless PATH says so; agent.env can
+# override this line.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/srv/agent/bin
 ExecStart=/usr/local/bin/issuewright tick --repo %i
 # A tick that finds nothing exits quickly; a long run is bounded by the profile's
 # max_run_minutes. Never let one hang tick block the rest of the day.

@@ -133,6 +133,23 @@ func New(opt Options) (*Engine, error) {
 // Profile exposes the loaded profile (used by --dry-run reporting and tests).
 func (e *Engine) Profile() *config.Profile { return e.prof }
 
+// reloadProfile re-reads the profile after the clone has advanced. An injected
+// profile (tests, --dry-run) is left alone.
+func (e *Engine) reloadProfile() error {
+	if e.opt.Profile != nil {
+		return nil
+	}
+	prof, err := config.LoadProfile(e.opt.Repo.Path)
+	if err != nil {
+		return fmt.Errorf("reload profile: %w", err)
+	}
+	if err := prof.Validate(); err != nil {
+		return err
+	}
+	e.prof = prof
+	return nil
+}
+
 // BrainChoice is the resolved brain for this repo.
 func (e *Engine) BrainChoice() config.BrainChoice {
 	return config.ResolveBrain(e.opt.Agent, e.opt.Repo, e.prof, e.opt.Override)
@@ -195,6 +212,11 @@ func (e *Engine) Tick(ctx context.Context) ([]Result, error) {
 	defer lock.Release()
 
 	if err := e.wts.EnsureClone(ctx, e.opt.Repo.Slug); err != nil {
+		return nil, err
+	}
+	// The clone may have just advanced: re-read the profile so a change on the
+	// base branch is honoured by this tick, not the next one.
+	if err := e.reloadProfile(); err != nil {
 		return nil, err
 	}
 
@@ -800,6 +822,9 @@ func (e *Engine) runOne(ctx context.Context, number int, name string, _ workflow
 	defer lock.Release()
 
 	if err := e.wts.EnsureClone(ctx, e.opt.Repo.Slug); err != nil {
+		return Result{}, err
+	}
+	if err := e.reloadProfile(); err != nil {
 		return Result{}, err
 	}
 	sel, issue, pr, err := load(number, name)

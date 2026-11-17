@@ -556,3 +556,60 @@ func TestPRBodyWithoutSummaryUsesBrainText(t *testing.T) {
 		t.Errorf("Closes appears %d times:\n%s", n, body)
 	}
 }
+
+// A real pilot ran with the previous profile: the clone had been advanced to the
+// merged profile, but the engine had loaded the profile before the sync. The
+// profile must be re-read after the clone moves.
+func TestProfileIsReloadedAfterTheCloneAdvances(t *testing.T) {
+	h := newHarness(t)
+	h.addIssue(80, "profile moved under us", "body")
+
+	// No injected profile: the engine must read .agent/agent.yaml from the clone.
+	profilePath := filepath.Join(h.cloneDir, config.ProfileDir, config.ProfileFile)
+	if err := os.MkdirAll(filepath.Dir(profilePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProfile := func(name string, run string, advisory bool) {
+		body := "version: 1\nchecks:\n  - name: " + name + "\n    paths: [\"**\"]\n    run: [\"" + run + "\"]\n"
+		if advisory {
+			body += "    advisory: true\n"
+		}
+		if err := os.WriteFile(profilePath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeProfile("old-check", "true", false)
+	// The clone must not look dirty, or EnsureClone refuses to advance it.
+	gitRun(t, h.cloneDir, "add", "-A")
+	gitRun(t, h.cloneDir, "commit", "-qm", "profile: old check")
+	gitRun(t, h.cloneDir, "push", "-q", "origin", "HEAD:main")
+
+	o := Options{Agent: h.agent, Repo: h.repo, GitHub: h.gh, Log: io.Discard,
+		Driver: &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"}}
+	e, err := New(o)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := e.Profile().Checks[0].Name; got != "old-check" {
+		t.Fatalf("initial profile = %q", got)
+	}
+
+	// The base branch moves on: the new check is advisory and named differently.
+	writeProfile("new-check", "echo newer", true)
+	gitRun(t, h.cloneDir, "add", "-A")
+	gitRun(t, h.cloneDir, "commit", "-qm", "profile: new check")
+	gitRun(t, h.cloneDir, "push", "-q", "origin", "HEAD:main")
+
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := e.Profile().Checks[0].Name; got != "new-check" {
+		t.Fatalf("profile was not reloaded: %q", got)
+	}
+	if len(h.gh.PRs) != 1 {
+		t.Fatalf("no PR: %+v", h.gh.Calls)
+	}
+	if !strings.Contains(h.gh.PRs[0].Body, "`new-check`") {
+		t.Errorf("the new check did not run:\n%s", h.gh.PRs[0].Body)
+	}
+}
