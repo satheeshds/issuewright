@@ -125,6 +125,8 @@ func New(opt Options) (*Engine, error) {
 			WorkRoot:     filepath.Join(opt.Agent.Workroot, opt.Repo.Name),
 			BaseBranch:   prof.BaseBranch,
 			BranchPrefix: prof.BranchPrefix,
+			Token:        tokenFor(opt.Repo),
+			GhBin:        opt.Agent.GhBin,
 		}),
 		now: opt.Now,
 	}, nil
@@ -861,6 +863,15 @@ func (b bestEffort) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	return n, nil
+}
+
+// tokenFor resolves the bot credential for a repo from its configured env var.
+func tokenFor(repo config.Repo) string {
+	name := repo.TokenEnv
+	if name == "" {
+		name = "GH_TOKEN"
+	}
+	return os.Getenv(name)
 }
 
 func dirExists(path string) bool {

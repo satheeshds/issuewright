@@ -28,6 +28,13 @@ type Options struct {
 	BranchPrefix string
 	// CloneURL, when set, is cloned with git instead of `gh repo clone`.
 	CloneURL string
+	// Token, when set, makes the clone go over HTTPS with that token. Without it
+	// the clone uses `gh repo clone`, which follows the account's git protocol —
+	// and an SSH account with no key gives "Host key verification failed" on a
+	// machine that has never seen github.com.
+	Token string
+	// GhBin is the gh binary used as a git credential helper (default "gh").
+	GhBin string
 	// GitBin defaults to "git".
 	GitBin string
 }
@@ -98,11 +105,19 @@ func (m *Manager) EnsureClone(ctx context.Context, slug string) error {
 		if err := os.MkdirAll(filepath.Dir(m.opt.CloneDir), 0o755); err != nil {
 			return err
 		}
-		if m.opt.CloneURL != "" {
+		switch {
+		case m.opt.CloneURL != "":
 			if _, err := m.git(ctx, "", "clone", m.opt.CloneURL, m.opt.CloneDir); err != nil {
 				return fmt.Errorf("clone %s: %w", m.opt.CloneURL, err)
 			}
-		} else {
+		case m.opt.Token != "":
+			// A bot token means HTTPS. Leaving the protocol to `gh repo clone`
+			// inherits whatever the account uses; over SSH on a fresh machine that
+			// fails with "Host key verification failed".
+			if err := m.cloneHTTPS(ctx, slug); err != nil {
+				return err
+			}
+		default:
 			cmd := exec.CommandContext(ctx, "gh", "repo", "clone", slug, m.opt.CloneDir)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("gh repo clone %s: %s", slug, strings.TrimSpace(string(out)))
@@ -150,6 +165,31 @@ func (m *Manager) syncClone(ctx context.Context) error {
 	}
 	if _, err := m.git(ctx, m.opt.CloneDir, "reset", "-q", "--hard", target); err != nil {
 		return fmt.Errorf("advance the agent clone to %s: %w", target, err)
+	}
+	return nil
+}
+
+// cloneHTTPS clones with the token from the environment, authenticating through
+// `gh auth git-credential` rather than an SSH key or a host key.
+func (m *Manager) cloneHTTPS(ctx context.Context, slug string) error {
+	gh := m.opt.GhBin
+	if gh == "" {
+		gh = "gh"
+	}
+	url := "https://github.com/" + slug + ".git"
+	args := []string{
+		"-c", "credential.helper=",
+		"-c", "credential.https://github.com.helper=!" + gh + " auth git-credential",
+		"clone", "--quiet", url, m.opt.CloneDir,
+	}
+	cmd := exec.CommandContext(ctx, m.opt.GitBin, args...)
+	cmd.Env = append(os.Environ(),
+		"GH_TOKEN="+m.opt.Token,
+		"GITHUB_TOKEN="+m.opt.Token,
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("clone %s over https: %s", url, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

@@ -325,3 +325,55 @@ func TestEnsureCloneRefusesToDestroyLocalChanges(t *testing.T) {
 		t.Error("the dirty file was deleted")
 	}
 }
+
+// A real deployment failed every tick with "Host key verification failed": the
+// clone went through `gh repo clone`, which followed the account's SSH protocol
+// on a machine that had never seen github.com. With a token it must use HTTPS.
+func TestEnsureCloneUsesHTTPSWithAToken(t *testing.T) {
+	root := t.TempDir()
+	bare := newOrigin(t)
+	log := filepath.Join(root, "git.log")
+
+	// A fake `git` that records the clone invocation and does the clone itself.
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf '%s|' \"$@\" >> " + log + "\nprintf '%s\\n' \"GH_TOKEN=${GH_TOKEN:-unset}\" >> " + log + "\nexec /usr/bin/git \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(Options{
+		CloneDir:   filepath.Join(root, "clone"),
+		WorkRoot:   filepath.Join(root, "work"),
+		BaseBranch: "main",
+		Token:      "ghs_testtoken",
+		// A real URL would need the network; point at the local bare repo while
+		// keeping the HTTPS shape the code chooses.
+		CloneURL: "",
+		GitBin:   filepath.Join(bin, "git"),
+	})
+	// The HTTPS url is built from the slug, so stand in a fake origin via insteadOf.
+	_ = bare
+	if err := m.EnsureClone(context.Background(), "acme/demo"); err == nil {
+		t.Log("clone unexpectedly succeeded without network")
+	}
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("the fake git was not used: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, "https://github.com/acme/demo.git") {
+		t.Errorf("clone did not use https:\n%s", got)
+	}
+	if !strings.Contains(got, "auth git-credential") {
+		t.Errorf("clone did not configure the gh credential helper:\n%s", got)
+	}
+	if !strings.Contains(got, "GH_TOKEN=ghs_testtoken") {
+		t.Errorf("the token was not passed to git:\n%s", got)
+	}
+	if strings.Contains(got, "ssh") {
+		t.Errorf("clone still mentions ssh:\n%s", got)
+	}
+}
