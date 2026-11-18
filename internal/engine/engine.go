@@ -115,6 +115,9 @@ func New(opt Options) (*Engine, error) {
 		}
 	}
 
+	if cli, ok := opt.GitHub.(*github.CLI); ok && cli.Token == "" {
+		cli.Token = tokenFor(opt.Repo)
+	}
 	stateDir := filepath.Join(filepath.Dir(opt.Agent.Workroot), "state")
 	return &Engine{
 		opt:   opt,

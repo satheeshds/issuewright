@@ -377,3 +377,76 @@ func TestEnsureCloneUsesHTTPSWithAToken(t *testing.T) {
 		t.Errorf("clone still mentions ssh:\n%s", got)
 	}
 }
+
+// A live deployment fetched over HTTPS and failed: "could not read Username for
+// 'https://github.com'". git does not read GH_TOKEN — it needs a credential
+// helper. Every git call must carry it, not just the clone.
+func TestGitCallsCarryTheCredentialHelper(t *testing.T) {
+	root := t.TempDir()
+	log := filepath.Join(root, "git.log")
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Fake git: records args and env, and pretends every command succeeded.
+	script := "#!/bin/sh\nprintf 'ARGS %s\\n' \"$*\" >> " + log + "\nprintf 'TOKEN %s\\n' \"${GH_TOKEN:-unset}\" >> " + log + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Options{
+		CloneDir:   filepath.Join(root, "clone"),
+		WorkRoot:   filepath.Join(root, "work"),
+		BaseBranch: "main",
+		Token:      "ghs_live_token",
+		GitBin:     filepath.Join(bin, "git"),
+	})
+	// Pretend the clone is already there so EnsureClone goes straight to fetch.
+	if err := os.MkdirAll(filepath.Join(m.CloneDir(), ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.EnsureClone(context.Background(), "acme/demo"); err != nil {
+		t.Fatalf("EnsureClone: %v", err)
+	}
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("fake git unused: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, "auth git-credential") {
+		t.Errorf("no credential helper was passed to git:\n%s", got)
+	}
+	if !strings.Contains(got, "TOKEN ghs_live_token") {
+		t.Errorf("GH_TOKEN was not in git's environment:\n%s", got)
+	}
+	// The helper must be persisted in the clone so plain git works for a human.
+	if !strings.Contains(got, "config credential.https://github.com.helper") {
+		t.Errorf("the clone's local credential helper was not configured:\n%s", got)
+	}
+}
+
+// Without a token the error must say so, instead of git's "could not read Username".
+func TestFetchErrorWithoutTokenExplainsItself(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$*\" in *fetch*) echo 'fatal: could not read Username' >&2; exit 128 ;; *) exit 0 ;; esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Options{
+		CloneDir: filepath.Join(root, "clone"), WorkRoot: filepath.Join(root, "work"),
+		BaseBranch: "main", GitBin: filepath.Join(bin, "git"),
+	})
+	if err := os.MkdirAll(filepath.Join(m.CloneDir(), ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := m.EnsureClone(context.Background(), "acme/demo")
+	if err == nil {
+		t.Fatal("expected a failure")
+	}
+	if !strings.Contains(err.Error(), "no token configured") {
+		t.Errorf("error should explain the missing token: %v", err)
+	}
+}

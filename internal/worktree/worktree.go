@@ -79,13 +79,42 @@ func (m *Manager) IssuePath(number int) string {
 	return filepath.Join(m.opt.WorkRoot, "issue-"+strconv.Itoa(number))
 }
 
-func (m *Manager) git(ctx context.Context, dir string, args ...string) (string, error) {
-	full := args
-	if dir != "" {
-		full = append([]string{"-C", dir}, args...)
+// credArgs makes git authenticate with the bot token. git has no idea what
+// GH_TOKEN is: it needs a credential helper, and `gh auth git-credential` is the
+// one that reads that variable. Every git call gets it, not just the clone —
+// otherwise the first `git fetch` in the clone fails with "could not read
+// Username for 'https://github.com'".
+func (m *Manager) credArgs() []string {
+	if m.opt.Token == "" {
+		return nil
 	}
+	gh := m.opt.GhBin
+	if gh == "" {
+		gh = "gh"
+	}
+	return []string{
+		"-c", "credential.helper=",
+		"-c", "credential.https://github.com.helper=!" + gh + " auth git-credential",
+	}
+}
+
+func (m *Manager) gitEnv() []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if m.opt.Token != "" {
+		env = append(env, "GH_TOKEN="+m.opt.Token, "GITHUB_TOKEN="+m.opt.Token)
+	}
+	return env
+}
+
+func (m *Manager) git(ctx context.Context, dir string, args ...string) (string, error) {
+	var full []string
+	if dir != "" {
+		full = append(full, "-C", dir)
+	}
+	full = append(full, m.credArgs()...)
+	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, m.opt.GitBin, full...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = m.gitEnv()
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -124,7 +153,17 @@ func (m *Manager) EnsureClone(ctx context.Context, slug string) error {
 			}
 		}
 	}
+	// Make plain `git` in the clone work too, so a human debugging by hand sees
+	// the same authentication the runner does.
+	if m.opt.Token != "" {
+		_, _ = m.git(ctx, m.opt.CloneDir, "config",
+			"credential.https://github.com.helper",
+			"!"+m.ghBin()+" auth git-credential")
+	}
 	if _, err := m.git(ctx, m.opt.CloneDir, "fetch", "--prune", "origin"); err != nil {
+		if m.opt.Token == "" {
+			return fmt.Errorf("%w (no token configured: set token_env for this repo, or run `gh auth login` as the agent user)", err)
+		}
 		return err
 	}
 	return m.syncClone(ctx)
@@ -171,11 +210,15 @@ func (m *Manager) syncClone(ctx context.Context) error {
 
 // cloneHTTPS clones with the token from the environment, authenticating through
 // `gh auth git-credential` rather than an SSH key or a host key.
-func (m *Manager) cloneHTTPS(ctx context.Context, slug string) error {
-	gh := m.opt.GhBin
-	if gh == "" {
-		gh = "gh"
+func (m *Manager) ghBin() string {
+	if m.opt.GhBin == "" {
+		return "gh"
 	}
+	return m.opt.GhBin
+}
+
+func (m *Manager) cloneHTTPS(ctx context.Context, slug string) error {
+	gh := m.ghBin()
 	url := "https://github.com/" + slug + ".git"
 	args := []string{
 		"-c", "credential.helper=",
@@ -183,11 +226,7 @@ func (m *Manager) cloneHTTPS(ctx context.Context, slug string) error {
 		"clone", "--quiet", url, m.opt.CloneDir,
 	}
 	cmd := exec.CommandContext(ctx, m.opt.GitBin, args...)
-	cmd.Env = append(os.Environ(),
-		"GH_TOKEN="+m.opt.Token,
-		"GITHUB_TOKEN="+m.opt.Token,
-		"GIT_TERMINAL_PROMPT=0",
-	)
+	cmd.Env = m.gitEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("clone %s over https: %s", url, strings.TrimSpace(string(out)))
 	}

@@ -224,3 +224,35 @@ func TestFakeRecordsOnlyWhatHappened(t *testing.T) {
 		t.Errorf("calls recorded = %d", n)
 	}
 }
+
+// Pushing has the same trap as fetching: git cannot use GH_TOKEN without a
+// credential helper, so a push with a token must configure one.
+func TestPushBranchUsesTheTokenAsCredentials(t *testing.T) {
+	dir := t.TempDir()
+	c := fakeGH(t, dir)
+	c.Token = "ghs_push_token"
+	c.Token = "ghs_push_token"
+	c.GitBin = "git"
+	if err := c.PushBranch(context.Background(), "/tmp/wt", "agent/issue-1"); err != nil {
+		t.Fatalf("PushBranch: %v", err)
+	}
+	got := readLog(t, filepath.Join(dir, "git.log"))
+	if !strings.Contains(got, "auth git-credential") {
+		t.Errorf("push did not configure the credential helper:\n%s", got)
+	}
+	if !strings.Contains(got, "push|--set-upstream|origin|agent/issue-1") {
+		t.Errorf("push arguments wrong:\n%s", got)
+	}
+}
+
+func TestPushBranchWithoutTokenKeepsThePlainCommand(t *testing.T) {
+	dir := t.TempDir()
+	c := fakeGH(t, dir)
+	if err := c.PushBranch(context.Background(), "/tmp/wt", "agent/issue-2"); err != nil {
+		t.Fatal(err)
+	}
+	got := readLog(t, filepath.Join(dir, "git.log"))
+	if strings.Contains(got, "auth git-credential") {
+		t.Errorf("a tokenless push should not configure a helper:\n%s", got)
+	}
+}

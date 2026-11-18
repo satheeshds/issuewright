@@ -288,7 +288,17 @@ func (c *CLI) PushBranch(ctx context.Context, dir, branch string) error {
 	if bin == "" {
 		bin = "git"
 	}
-	cmd := exec.CommandContext(ctx, bin, "-C", dir, "push", "--set-upstream", "origin", branch)
+	// Same credential plumbing as the clone: git needs a helper to use GH_TOKEN.
+	args := []string{"-C", dir}
+	if c.Token != "" {
+		args = append(args,
+			"-c", "credential.helper=",
+			"-c", "credential.https://github.com.helper=!gh auth git-credential")
+	}
+	args = append(args, "push", "--set-upstream", "origin", branch)
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = c.env()
+	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git push %s: %s", branch, strings.TrimSpace(string(out)))
