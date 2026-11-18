@@ -168,21 +168,38 @@ func (e *Engine) logf(format string, args ...any) {
 func (e *Engine) discover(ctx context.Context) ([]workflow.Event, []github.Issue, []github.PR, error) {
 	var events []workflow.Event
 
-	issues, err := e.opt.GitHub.ListAssignedIssues(ctx, e.opt.Repo.Slug, e.opt.Repo.Bot)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("list assigned issues: %w", err)
-	}
 	forceLabel := e.prof.Issue.ForceLabel
-	for _, is := range issues {
-		if e.prof.PickupMode("implement") == "assignee" {
-			events = append(events, workflow.Event{
-				Kind: workflow.IssueAssigned, Number: is.Number, Title: is.Title, Labels: is.Labels,
-			})
+	byLabel := e.prof.PickupMode("implement") == "label"
+
+	// Assignment and labelling are independent triggers. In label mode the label
+	// alone is enough, which matters when assigning an App bot is not possible.
+	var issues []github.Issue
+	if byLabel && forceLabel != "" {
+		labeled, err := e.opt.GitHub.ListIssuesWithLabel(ctx, e.opt.Repo.Slug, forceLabel)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("list issues labelled %s: %w", forceLabel, err)
 		}
-		if hasLabel(is.Labels, forceLabel) {
+		issues = labeled
+		for _, is := range issues {
 			events = append(events, workflow.Event{
 				Kind: workflow.IssueLabel, Number: is.Number, Title: is.Title, Labels: is.Labels,
 			})
+		}
+	} else {
+		assigned, err := e.opt.GitHub.ListAssignedIssues(ctx, e.opt.Repo.Slug, e.opt.Repo.Bot)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("list assigned issues: %w", err)
+		}
+		issues = assigned
+		for _, is := range issues {
+			events = append(events, workflow.Event{
+				Kind: workflow.IssueAssigned, Number: is.Number, Title: is.Title, Labels: is.Labels,
+			})
+			if hasLabel(is.Labels, forceLabel) {
+				events = append(events, workflow.Event{
+					Kind: workflow.IssueLabel, Number: is.Number, Title: is.Title, Labels: is.Labels,
+				})
+			}
 		}
 	}
 

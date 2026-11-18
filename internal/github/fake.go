@@ -70,6 +70,21 @@ func (f *Fake) ListAssignedIssues(_ context.Context, slug, login string) ([]Issu
 	return out, nil
 }
 
+func (f *Fake) ListIssuesWithLabel(_ context.Context, slug, label string) ([]Issue, error) {
+	if err := f.record("list-labeled %s %s", slug, label); err != nil {
+		return nil, err
+	}
+	var out []Issue
+	for _, i := range f.Issues {
+		for _, l := range i.Labels {
+			if l == label {
+				out = append(out, i)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (f *Fake) GetIssue(_ context.Context, _ string, number int) (Issue, error) {
 	if err := f.record("get-issue %d", number); err != nil {
 		return Issue{}, err

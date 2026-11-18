@@ -6,6 +6,9 @@
 version: 1
 
 issue:
+  # assignee: assignment to the bot starts work.
+  # label:    the force_label alone starts work (use when the App bot cannot be
+  #           assigned — GitHub answers "Bot does not have access to the repository").
   pickup: assignee            # assignee | label
   force_label: agent:go       # labelling an issue also starts work
   in_progress_label: agent:in-progress

@@ -45,6 +45,7 @@ type PR struct {
 // implementation, which is the point: the engine never shells out itself.
 type Client interface {
 	ListAssignedIssues(ctx context.Context, slug, login string) ([]Issue, error)
+	ListIssuesWithLabel(ctx context.Context, slug, label string) ([]Issue, error)
 	GetIssue(ctx context.Context, slug string, number int) (Issue, error)
 	ListReviewRequestedPRs(ctx context.Context, slug, login string) ([]PR, error)
 	GetPR(ctx context.Context, slug string, number int) (PR, error)
@@ -137,6 +138,25 @@ const issueFields = "number,title,body,url,state,labels,assignees"
 
 func (c *CLI) ListAssignedIssues(ctx context.Context, slug, login string) ([]Issue, error) {
 	out, err := c.gh(ctx, "issue", "list", "--repo", slug, "--assignee", login,
+		"--state", "open", "--limit", "100", "--json", issueFields)
+	if err != nil {
+		return nil, err
+	}
+	var raw []issueJSON
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse issue list: %w", err)
+	}
+	issues := make([]Issue, 0, len(raw))
+	for _, r := range raw {
+		issues = append(issues, r.toIssue())
+	}
+	return issues, nil
+}
+
+// ListIssuesWithLabel finds work by label, for repos where assigning an App bot
+// is awkward (or not possible) and the label is the trigger.
+func (c *CLI) ListIssuesWithLabel(ctx context.Context, slug, label string) ([]Issue, error) {
+	out, err := c.gh(ctx, "issue", "list", "--repo", slug, "--label", label,
 		"--state", "open", "--limit", "100", "--json", issueFields)
 	if err != nil {
 		return nil, err

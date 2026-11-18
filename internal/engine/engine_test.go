@@ -613,3 +613,48 @@ func TestProfileIsReloadedAfterTheCloneAdvances(t *testing.T) {
 		t.Errorf("the new check did not run:\n%s", h.gh.PRs[0].Body)
 	}
 }
+
+// Label mode must not require assignment: on a real repo the App bot could not be
+// assigned ("Bot does not have access to the repository"), and the label is the
+// only workable trigger.
+func TestLabelPickupWorksWithoutAnAssignee(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Issue.Pickup = "label"
+	h.profile.Issue.ForceLabel = "agent:go"
+	// The issue is labelled but assigned to nobody.
+	h.gh.Issues = append(h.gh.Issues, github.Issue{
+		Number: 90, Title: "labelled work", Body: "body", Labels: []string{"agent:go"},
+	})
+
+	e, logs := h.engine(t, &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"})
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if len(results) != 1 || results[0].Number != 90 || results[0].State != StateDone {
+		t.Fatalf("results = %+v\n%s", results, logs)
+	}
+	if len(h.gh.CallsMatching("list-labeled")) != 1 {
+		t.Errorf("label pickup should query by label: %v", h.gh.Calls)
+	}
+	if len(h.gh.CallsMatching("list-assigned")) != 0 {
+		t.Errorf("label pickup must not depend on assignees: %v", h.gh.Calls)
+	}
+}
+
+// In assignee mode an unlabelled, assigned issue still works.
+func TestAssigneePickupStillWorks(t *testing.T) {
+	h := newHarness(t)
+	h.addIssue(91, "assigned work", "body")
+	e, logs := h.engine(t, &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"})
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if len(results) != 1 || results[0].State != StateDone {
+		t.Fatalf("results = %+v\n%s", results, logs)
+	}
+	if len(h.gh.CallsMatching("list-assigned")) != 1 {
+		t.Errorf("assignee mode should query by assignee: %v", h.gh.Calls)
+	}
+}
