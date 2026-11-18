@@ -233,3 +233,31 @@ func TestMarshalYAMLRoundTrips(t *testing.T) {
 		t.Errorf("run command mangled: %q", got.Checks[0].Run[0])
 	}
 }
+
+// A live repo had issue.pickup: label (the trigger the user wanted) plus
+// workflows.implement.pickup: assignee, which silently won: the label never
+// started anything. The conflict must be detectable.
+func TestPickupConflict(t *testing.T) {
+	p := Defaults()
+	p.Issue.Pickup = "label"
+	p.Workflows["implement"] = WorkflowSettings{Pickup: "assignee"}
+	msg := p.PickupConflict("implement")
+	if !strings.Contains(msg, "workflows.implement.pickup") || !strings.Contains(msg, "issue.pickup") {
+		t.Errorf("conflict not reported: %q", msg)
+	}
+	if got := p.PickupMode("implement"); got != "assignee" {
+		t.Errorf("workflow pickup must win (and be reported), got %q", got)
+	}
+
+	same := Defaults()
+	same.Issue.Pickup = "label"
+	same.Workflows["implement"] = WorkflowSettings{Pickup: "label"}
+	if msg := same.PickupConflict("implement"); msg != "" {
+		t.Errorf("identical settings are not a conflict: %q", msg)
+	}
+	oneOnly := Defaults()
+	oneOnly.Issue.Pickup = "label"
+	if msg := oneOnly.PickupConflict("implement"); msg != "" {
+		t.Errorf("a single setting is not a conflict: %q", msg)
+	}
+}

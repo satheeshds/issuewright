@@ -215,6 +215,21 @@ func (p *Profile) Workflow(name string) WorkflowSettings {
 	return p.Workflows[name]
 }
 
+// PickupConflict reports a workflow-level pickup that silently overrides the
+// issue-level one. Two settings that disagree is how a label trigger stops
+// working without anyone noticing.
+func (p *Profile) PickupConflict(workflow string) string {
+	if p == nil {
+		return ""
+	}
+	w := p.Workflow(workflow)
+	if w.Pickup == "" || p.Issue.Pickup == "" || w.Pickup == p.Issue.Pickup {
+		return ""
+	}
+	return fmt.Sprintf("workflows.%s.pickup=%q overrides issue.pickup=%q; remove one of them",
+		workflow, w.Pickup, p.Issue.Pickup)
+}
+
 // PickupMode resolves the effective pickup mode for a workflow.
 func (p *Profile) PickupMode(workflow string) string {
 	if w := p.Workflow(workflow); w.Pickup != "" {

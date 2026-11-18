@@ -104,6 +104,11 @@ func New(opt Options) (*Engine, error) {
 	if err := prof.Validate(); err != nil {
 		return nil, err
 	}
+	for _, name := range workflow.Names() {
+		if msg := prof.PickupConflict(name); msg != "" && opt.Verbose {
+			fmt.Fprintf(opt.Log, "[%s] warning: %s\n", opt.Repo.Name, msg)
+		}
+	}
 
 	choice := config.ResolveBrain(opt.Agent, opt.Repo, prof, opt.Override)
 	if !brain.ValidThinking(choice.Thinking) {
