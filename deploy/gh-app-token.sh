@@ -18,6 +18,18 @@ set -euo pipefail
 
 # GitHub accepts the App ID or the client ID as `iss`, and recommends the client
 # ID. Take whichever is configured.
+# When run by hand the variables are usually not in the environment: the unit
+# supplies them from gh-app.env. Read the same file so the command works either
+# way, instead of failing with "GH_APP_ID is required" over a correctly
+# configured machine.
+ENV_FILE=${GH_APP_ENV_FILE:-/srv/agent/gh-app.env}
+if [ -z "${GH_APP_CLIENT_ID:-}" ] && [ -z "${GH_APP_ID:-}" ] && [ -r "$ENV_FILE" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "$ENV_FILE"
+	set +a
+fi
+
 APP_ID=${GH_APP_CLIENT_ID:-${GH_APP_ID:-}}
 KEY=${GH_APP_KEY:-/srv/agent/gh-app.pem}
 REPO=${GH_REPO:-}
@@ -41,6 +53,8 @@ Environment:
   GH_REPO          owner/repo the App is installed on (required)
   GH_TOKEN_FILE    where to write GH_TOKEN=… (default /srv/agent/token.env)
   GH_TOKEN_OWNER   chown the file to this user when running as root (default agent)
+  GH_APP_ENV_FILE  env file to read when the variables above are unset
+                   (default /srv/agent/gh-app.env)
 USAGE
 }
 

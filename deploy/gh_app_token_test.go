@@ -216,3 +216,51 @@ func TestTokenUnitsAreEmbedded(t *testing.T) {
 		t.Error("main unit does not load the minted token (and would ignore it)")
 	}
 }
+
+// Running the minter by hand on a provisioned box failed with "GH_APP_ID is
+// required" even though gh-app.env had it: the unit supplies that file, a human
+// shell does not. The script must read it itself.
+func TestMinterReadsTheEnvFileWhenByHand(t *testing.T) {
+	key, bindir, _ := setupAppFixtures(t)
+	envFile := filepath.Join(t.TempDir(), "gh-app.env")
+	if err := os.WriteFile(envFile, []byte(
+		"GH_APP_ID=4242\nGH_REPO=acme/demo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runMinter(t, map[string]string{
+		"PATH":            bindir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GH_APP_KEY":      key,
+		"GH_APP_ENV_FILE": envFile,
+	}, "--print")
+	if code != 0 {
+		t.Fatalf("minter failed (%d):\n%s", code, out)
+	}
+	if strings.TrimSpace(out) != "ghs_minted" {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestMinterPrefersTheEnvironmentOverTheFile(t *testing.T) {
+	key, bindir, calls := setupAppFixtures(t)
+	envFile := filepath.Join(t.TempDir(), "gh-app.env")
+	if err := os.WriteFile(envFile, []byte("GH_APP_ID=999999\nGH_REPO=ignored/repo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runMinter(t, map[string]string{
+		"PATH":            bindir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GH_APP_ID":       "42",
+		"GH_REPO":         "acme/demo",
+		"GH_APP_KEY":      key,
+		"GH_APP_ENV_FILE": envFile,
+	}, "--print")
+	if code != 0 {
+		t.Fatalf("minter failed (%d):\n%s", code, out)
+	}
+	log, _ := os.ReadFile(calls)
+	if !strings.Contains(string(log), "repos/acme/demo/installation") {
+		t.Errorf("the environment was overridden by the file:\n%s", log)
+	}
+	if strings.Contains(string(log), "ignored/repo") {
+		t.Errorf("the file won over the environment:\n%s", log)
+	}
+}
