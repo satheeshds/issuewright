@@ -31,7 +31,7 @@ func TestRunInvokesOpenCodeRun(t *testing.T) {
 	res, err := d.Run(context.Background(), brain.Spec{
 		Prompt:  "implement #39",
 		Workdir: t.TempDir(),
-		Model:   "opencode-go/kimi",
+		Model:   "example/model-a",
 		Timeout: time.Minute,
 	}, &log)
 	if err != nil {
@@ -47,7 +47,7 @@ func TestRunInvokesOpenCodeRun(t *testing.T) {
 	if len(args) < 3 || args[0] != "run" || args[1] != "--auto" {
 		t.Fatalf("args = %v", args)
 	}
-	if !contains(args, "--model") || !contains(args, "opencode-go/kimi") {
+	if !contains(args, "--model") || !contains(args, "example/model-a") {
 		t.Errorf("model not passed: %v", args)
 	}
 	if args[len(args)-1] != "implement #39" {

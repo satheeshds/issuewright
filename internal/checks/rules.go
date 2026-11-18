@@ -22,7 +22,7 @@ var globCache sync.Map // pattern → *regexp.Regexp
 // Match reports whether a repo-relative path matches an issuewright glob.
 //
 // Globs support `*` (within a segment), `?` and `**` (any number of segments), so
-// `apps/api_server/**/*.go` matches both nested and top-level files.
+// `services/api/**/*.go` matches both nested and top-level files.
 func Match(pattern, path string) bool {
 	pattern = strings.TrimPrefix(strings.TrimSpace(pattern), "./")
 	path = strings.TrimPrefix(strings.TrimSpace(path), "./")

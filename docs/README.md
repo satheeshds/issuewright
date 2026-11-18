@@ -42,7 +42,7 @@ sudo issuewright install                                # writes the systemd uni
 ```
 
 `issuewright install` writes `/etc/systemd/system/issuewright@.{service,timer}`.
-One template instance per repo, so `issuewright@daily-fish.timer` and
+One template instance per repo, so `issuewright@my-repo.timer` and
 `issuewright@other-repo.timer` are independent.
 
 ### One command instead
@@ -171,7 +171,7 @@ checks:                     # paths → commands; every matching check runs
 
 protect:
   write_denylist: ["db/", "openapi/"]   # agent may not edit them
-  never_run: ["make migrate", "make db-push"]
+  never_run: ["make db-migrate", "make db-push"]
   secret_paths: [".env", ".env."]
 ```
 
@@ -235,6 +235,19 @@ That is how a profile edit on the base branch reaches the runner. A clone with
 local changes is left alone and the run is refused loudly, because silently
 resetting it would delete someone's work.
 
+### Per-issue overrides by label
+
+```
+model:provider/strong     run this issue on another model
+thinking:low              less deliberation (cheaper) for a small task
+brain:opencode            use a different driver for this run
+```
+
+Resolution, most specific first: **CLI flags → label → profile `brain:` → `[[repo]]`
+→ `[agent]` → driver default.** Unknown brains or thinking levels are logged and
+dropped; the run continues on the configured value. The PR body records which
+brain, model and thinking level actually produced the work.
+
 ### Resuming after an interruption
 
 The branch and the worktree are the checkpoint. A tick that was killed mid-run
@@ -290,9 +303,9 @@ tool call, and the reported cost if the brain reports one.
   repo's own workflows (that is the point of a user/App token), so pre-existing
   CI failures show up there too. Fix CI or the agent's PRs will always look red.
 
-- Migrations. A runner has no database. If the profile forbids `make migrate`
-  (as it should), a schema-changing issue yields a PR with the schema and queries
-  updated, and a note that a human must run migrations before merge.
+- Migrations. A runner has no database. If the profile forbids the repo's
+  migration command (as it should), a schema-changing issue yields a PR with the
+  schema and queries updated, and a note that a human must migrate before merge.
 - Mentions. `comment_mention` triggers exist in the workflow API but the CLI
   client does not poll for mentions yet; use `issuewright run --pr N` instead.
 - One job per repo per tick. A long `implement` delays a `review`, since both

@@ -14,9 +14,9 @@ they are instructions, not documentation.
 
 ## Verification
 
-- Go: `cd apps/api && go test ./... && go build ./...`
-- Admin: `cd apps/admin && npm ci && npm run build && npm test`
-- Mobile: `cd apps/mobile && flutter pub get && flutter analyze && flutter test`
+- Go: `cd services/api && go test ./... && go build ./...`
+- Web: `cd web && npm ci && npm run build && npm test`
+- Mobile: `cd mobile && flutter pub get && flutter analyze && flutter test`
 
 Run the narrowest set that covers the change; the runner runs the rest.
 

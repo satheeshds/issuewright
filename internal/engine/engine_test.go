@@ -20,6 +20,7 @@ import (
 	"github.com/satheeshds/issuewright/internal/worktree"
 	"github.com/satheeshds/issuewright/prompts"
 
+	_ "github.com/satheeshds/issuewright/internal/brain/stub"
 	_ "github.com/satheeshds/issuewright/internal/workflow/implement"
 	_ "github.com/satheeshds/issuewright/internal/workflow/review"
 )
@@ -81,7 +82,7 @@ func newHarness(t *testing.T) *harness {
 	prof := config.Defaults()
 	prof.Checks = []config.Check{{Name: "all", Paths: []string{"**"}, Run: []string{"true"}}}
 	prof.Protect.WriteDenylist = []string{"db/*.go"}
-	prof.Protect.NeverRun = []string{"make migrate"}
+	prof.Protect.NeverRun = []string{"make db-reset"}
 	prof.Protect.SecretPaths = []string{".env", ".env.*"}
 	prof.Prompt.PreambleFile = "AGENT_RULES.md"
 
@@ -126,7 +127,7 @@ func (h *harness) addIssue(number int, title, body string, labels ...string) {
 
 func TestTickImplementsAnIssueEndToEnd(t *testing.T) {
 	h := newHarness(t)
-	h.addIssue(39, "Add metrics", "instrument the API")
+	h.addIssue(12, "Add metrics", "instrument the API")
 	e, logs := h.engine(t, &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- added metrics\n"})
 
 	results, err := e.Tick(context.Background())
@@ -141,13 +142,13 @@ func TestTickImplementsAnIssueEndToEnd(t *testing.T) {
 	}
 
 	// A branch was pushed and a draft PR opened.
-	if len(h.gh.Pushed) != 1 || h.gh.Pushed[0] != "agent/issue-39" {
+	if len(h.gh.Pushed) != 1 || h.gh.Pushed[0] != "agent/issue-12" {
 		t.Fatalf("pushed = %v", h.gh.Pushed)
 	}
 	if len(h.gh.PRs) != 1 || !h.gh.PRs[0].Draft {
 		t.Fatalf("PRs = %+v", h.gh.PRs)
 	}
-	if !strings.Contains(h.gh.PRs[0].Body, "Closes #39") {
+	if !strings.Contains(h.gh.PRs[0].Body, "Closes #12") {
 		t.Errorf("PR body must close the issue: %q", h.gh.PRs[0].Body)
 	}
 	if !strings.Contains(h.gh.PRs[0].Body, "added metrics") {
@@ -158,16 +159,16 @@ func TestTickImplementsAnIssueEndToEnd(t *testing.T) {
 	}
 
 	// Labels and comments tell the human what happened.
-	labels := strings.Join(h.gh.Labels[39], ",")
+	labels := strings.Join(h.gh.Labels[12], ",")
 	if !strings.Contains(labels, "agent:done") {
 		t.Errorf("labels = %q", labels)
 	}
-	if len(h.gh.Comments[39]) < 2 {
-		t.Errorf("expected a claim comment and a summary: %v", h.gh.Comments[39])
+	if len(h.gh.Comments[12]) < 2 {
+		t.Errorf("expected a claim comment and a summary: %v", h.gh.Comments[12])
 	}
 
 	// The agent's report is never committed.
-	files := gitRun(t, h.cloneDir, "ls-tree", "--name-only", "agent/issue-39")
+	files := gitRun(t, h.cloneDir, "ls-tree", "--name-only", "agent/issue-12")
 	if strings.Contains(files, prompts.SummaryFile) {
 		t.Errorf("SUMMARY.md was committed: %s", files)
 	}
@@ -267,13 +268,13 @@ func TestDenylistedWriteBlocks(t *testing.T) {
 func TestForbiddenCommandInRunLogBlocks(t *testing.T) {
 	h := newHarness(t)
 	h.addIssue(12, "runs migrate", "body")
-	e, logs := h.engine(t, &toolCallDriver{command: "make migrate && echo done"})
+	e, logs := h.engine(t, &toolCallDriver{command: "make db-reset && echo done"})
 
 	results, err := e.Tick(context.Background())
 	if err != nil {
 		t.Fatalf("Tick: %v\n%s", err, logs)
 	}
-	if results[0].State != StateBlocked || !strings.Contains(results[0].Detail, "make migrate") {
+	if results[0].State != StateBlocked || !strings.Contains(results[0].Detail, "make db-reset") {
 		t.Fatalf("results = %+v", results)
 	}
 	if len(h.gh.PRs) != 0 {
@@ -656,5 +657,87 @@ func TestAssigneePickupStillWorks(t *testing.T) {
 	}
 	if len(h.gh.CallsMatching("list-assigned")) != 1 {
 		t.Errorf("assignee mode should query by assignee: %v", h.gh.Calls)
+	}
+}
+
+// A label on one issue can pick the model for that run, without changing the
+// repo's default for everything else.
+func TestLabelsChooseTheModelForOneRun(t *testing.T) {
+	h := newHarness(t)
+	h.agent.Model = "provider/default"
+	h.addIssue(100, "needs a stronger model", "body", "model:provider/strong")
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"}
+
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if drv.sawModel != "provider/strong" {
+		t.Errorf("model = %q, want the label's", drv.sawModel)
+	}
+	if !strings.Contains(h.gh.PRs[0].Body, "provider/strong") {
+		t.Errorf("the PR body should name the model used? (brain attribution)\n%s", h.gh.PRs[0].Body)
+	}
+}
+
+func TestLabelsChooseThinkingAndFallBackWhenInvalid(t *testing.T) {
+	h := newHarness(t)
+	h.agent.Thinking = "high"
+	h.addIssue(101, "low effort", "body", "thinking:low")
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"}
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if drv.sawThinking != "low" {
+		t.Errorf("thinking = %q, want low", drv.sawThinking)
+	}
+
+	// An unknown level must not stop the run: it is ignored and reported.
+	h2 := newHarness(t)
+	h2.agent.Thinking = "high"
+	h2.addIssue(102, "typo in a label", "body", "thinking:ultra")
+	drv2 := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"}
+	e2, logs2 := h2.engine(t, drv2)
+	if _, err := e2.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs2)
+	}
+	if drv2.sawThinking != "high" {
+		t.Errorf("thinking = %q, want the configured fallback", drv2.sawThinking)
+	}
+	if !strings.Contains(logs2.String(), "ignoring thinking label") {
+		t.Errorf("the ignored label should be reported:\n%s", logs2.String())
+	}
+}
+
+func TestCommandLineFlagBeatsTheLabel(t *testing.T) {
+	h := newHarness(t)
+	h.agent.Model = "provider/default"
+	h.addIssue(103, "flag wins", "body", "model:provider/from-label")
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"}
+	e, logs := h.engine(t, drv, func(o *Options) {
+		o.Override = config.Overrides{Model: "provider/from-flag"}
+	})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if drv.sawModel != "provider/from-flag" {
+		t.Errorf("model = %q, want the flag", drv.sawModel)
+	}
+}
+
+func TestUnknownBrainLabelIsIgnored(t *testing.T) {
+	h := newHarness(t)
+	h.addIssue(104, "bad brain label", "body", "brain:nope")
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"}
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if !strings.Contains(logs.String(), "ignoring brain label") {
+		t.Errorf("an unknown brain should be reported:\n%s", logs.String())
+	}
+	if len(h.gh.PRs) != 1 {
+		t.Error("the run should still have published")
 	}
 }

@@ -26,10 +26,14 @@ type Profile struct {
 	BranchPrefix string `yaml:"branch_prefix"`
 	BaseBranch   string `yaml:"base_branch"`
 
-	Checks    []Check                     `yaml:"checks"`
-	Protect   Protect                     `yaml:"protect"`
-	Prompt    PromptSettings              `yaml:"prompt"`
-	Brain     BrainSettings               `yaml:"brain"`
+	Checks  []Check        `yaml:"checks"`
+	Protect Protect        `yaml:"protect"`
+	Prompt  PromptSettings `yaml:"prompt"`
+	Brain   BrainSettings  `yaml:"brain"`
+	// Labels lets a label on the issue pick the brain, model or thinking level
+	// for that run, e.g. `model:provider/fast` on one issue and nothing on the
+	// rest: the same mechanism as brain:, one level more specific.
+	Labels    LabelSettings               `yaml:"labels"`
 	Workflows map[string]WorkflowSettings `yaml:"workflows"`
 }
 
@@ -71,6 +75,31 @@ type Protect struct {
 type PromptSettings struct {
 	PreambleFile string   `yaml:"preamble_file"`
 	Notes        []string `yaml:"notes"`
+}
+
+// LabelSettings control label-driven overrides on a per-run basis.
+type LabelSettings struct {
+	// Override defaults to true. Set false to ignore these labels entirely.
+	Override *bool `yaml:"override"`
+	// Prefixes; set one to "" to disable that particular override.
+	ModelPrefix    string `yaml:"model_prefix"`
+	ThinkingPrefix string `yaml:"thinking_prefix"`
+	BrainPrefix    string `yaml:"brain_prefix"`
+}
+
+// Default label prefixes.
+const (
+	DefaultModelLabelPrefix    = "model:"
+	DefaultThinkingLabelPrefix = "thinking:"
+	DefaultBrainLabelPrefix    = "brain:"
+)
+
+// EnabledOr reports whether label overrides are allowed.
+func (l LabelSettings) EnabledOr(def bool) bool {
+	if l.Override == nil {
+		return def
+	}
+	return *l.Override
 }
 
 // BrainSettings override the fleet brain for this repo.
@@ -169,7 +198,12 @@ func Defaults() *Profile {
 		BaseBranch:   DefaultBaseBranch,
 		Protect:      Protect{SecretPaths: []string{".env", ".env.*"}},
 		Prompt:       PromptSettings{PreambleFile: filepath.Join(ProfileDir, "rules.md")},
-		Workflows:    map[string]WorkflowSettings{},
+		Labels: LabelSettings{
+			ModelPrefix:    DefaultModelLabelPrefix,
+			ThinkingPrefix: DefaultThinkingLabelPrefix,
+			BrainPrefix:    DefaultBrainLabelPrefix,
+		},
+		Workflows: map[string]WorkflowSettings{},
 	}
 }
 
@@ -205,6 +239,11 @@ func (p *Profile) applyDefaults() {
 	if p.Workflows == nil {
 		p.Workflows = map[string]WorkflowSettings{}
 	}
+	if p.Labels.ModelPrefix == "" && p.Labels.ThinkingPrefix == "" && p.Labels.BrainPrefix == "" {
+		// Nothing configured: take all three defaults. A profile that sets one
+		// prefix and empties another means it, so leave it alone.
+		p.Labels = d.Labels
+	}
 }
 
 // Workflow returns the settings for a workflow name, or zero value.
@@ -228,6 +267,64 @@ func (p *Profile) PickupConflict(workflow string) string {
 	}
 	return fmt.Sprintf("workflows.%s.pickup=%q overrides issue.pickup=%q; remove one of them",
 		workflow, w.Pickup, p.Issue.Pickup)
+}
+
+// LabelOverrides reads brain/model/thinking out of a label list. Labels are the
+// most specific place to say "run this one on a different model", without
+// changing the repo's defaults for everything else.
+//
+// Unknown or duplicated values are reported as warnings rather than failures: a
+// mistyped label should not stop work, it should be visible in the log.
+func (p *Profile) LabelOverrides(labels []string) (Overrides, []string) {
+	if p == nil || !p.Labels.EnabledOr(true) {
+		return Overrides{}, nil
+	}
+	var ov Overrides
+	var warnings []string
+	for _, label := range labels {
+		name := strings.TrimSpace(label)
+		lower := strings.ToLower(name)
+		switch {
+		case p.Labels.BrainPrefix != "" && strings.HasPrefix(lower, strings.ToLower(p.Labels.BrainPrefix)):
+			v := strings.TrimSpace(name[len(p.Labels.BrainPrefix):])
+			if ov.Brain != "" && ov.Brain != v {
+				warnings = append(warnings, fmt.Sprintf("two brain labels (%q, %q): using %q", ov.Brain, v, ov.Brain))
+				continue
+			}
+			ov.Brain = v
+		case p.Labels.ModelPrefix != "" && strings.HasPrefix(lower, strings.ToLower(p.Labels.ModelPrefix)):
+			v := strings.TrimSpace(name[len(p.Labels.ModelPrefix):])
+			if ov.Model != "" && ov.Model != v {
+				warnings = append(warnings, fmt.Sprintf("two model labels (%q, %q): using %q", ov.Model, v, ov.Model))
+				continue
+			}
+			ov.Model = v
+		case p.Labels.ThinkingPrefix != "" && strings.HasPrefix(lower, strings.ToLower(p.Labels.ThinkingPrefix)):
+			v := strings.ToLower(strings.TrimSpace(name[len(p.Labels.ThinkingPrefix):]))
+			if ov.Thinking != "" && ov.Thinking != v {
+				warnings = append(warnings, fmt.Sprintf("two thinking labels (%q, %q): using %q", ov.Thinking, v, ov.Thinking))
+				continue
+			}
+			ov.Thinking = v
+		}
+	}
+	return ov, warnings
+}
+
+// MergeOverrides returns primary, filled in from secondary where primary is
+// empty. Command-line flags (primary) therefore beat labels (secondary).
+func MergeOverrides(primary, secondary Overrides) Overrides {
+	out := primary
+	if out.Brain == "" {
+		out.Brain = secondary.Brain
+	}
+	if out.Model == "" {
+		out.Model = secondary.Model
+	}
+	if out.Thinking == "" {
+		out.Thinking = secondary.Thinking
+	}
+	return out
 }
 
 // PickupMode resolves the effective pickup mode for a workflow.

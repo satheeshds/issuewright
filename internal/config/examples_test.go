@@ -42,6 +42,9 @@ func TestExampleProfileIsValid(t *testing.T) {
 	if _, ok := p.Workflows["review"]; !ok {
 		t.Error("the example should show review enabled")
 	}
+	if p.Labels.ModelPrefix == "" || p.Labels.BrainPrefix == "" {
+		t.Error("the example should show the label override prefixes")
+	}
 }
 
 func TestExampleRulesFileExists(t *testing.T) {

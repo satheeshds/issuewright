@@ -1,4 +1,4 @@
-# A reference profile for a polyglot monorepo: a Go API, a TypeScript admin UI,
+# A reference profile for a polyglot monorepo: a Go API, a TypeScript web UI,
 # and a Flutter app sharing a database schema and an OpenAPI contract.
 #
 # Copy to .agent/agent.yaml and delete what you do not need. Every field is
@@ -20,64 +20,65 @@ base_branch: main
 
 checks:
   - name: go
-    paths: ["apps/api/**/*.go", "apps/api/go.mod", "apps/api/go.sum"]
+    paths: ["services/api/**/*.go", "services/api/go.mod", "services/api/go.sum"]
     run:
-      - cd apps/api && go test ./... && go build ./...
+      - cd services/api && go test ./... && go build ./...
 
   # Codegen is both a verification step and a drift gate: the generator may
   # rewrite these paths, hands may not.
   - name: codegen
     paths:
-      - apps/api/queries/**
-      - apps/api/handlers/**
-      - apps/api/internal/*/handler.go
-      - packages/database/schema.sql
+      - services/api/queries/**
+      - services/api/handlers/**
+      - services/api/internal/*/handler.go
+      - db/schema.sql
     run:
-      - make sqlc
-      - make openapi
-      - make ts
+      - make generate
     drift:
-      - apps/api/db/**
-      - packages/openapi/swagger.yaml
-      - packages/openapi/swagger.json
-      - packages/openapi/docs.go
-      - packages/openapi/generated/**
+      - services/api/db/**
+      - contracts/openapi.yaml
+      - contracts/generated/**
 
-  - name: admin
-    paths: ["apps/admin/**"]
+  - name: web
+    paths: ["web/**"]
     run:
-      - cd apps/admin && npm ci && npm run build && npm test
+      - cd web && npm ci && npm run build && npm test
 
   - name: mobile
-    paths: ["apps/mobile/**/*.dart", "apps/mobile/pubspec.yaml", "packages/openapi/generated/dart_client/**"]
+    paths: ["mobile/**/*.dart", "mobile/pubspec.yaml", "generated/**"]
     run:
-      - cd apps/mobile && flutter pub get && flutter analyze && flutter test
+      - cd mobile && flutter pub get && flutter analyze && flutter test
 
 protect:
   # Never hand-edited; regenerate instead.
   write_denylist:
-    - apps/api/db/**
-    - packages/openapi/swagger.yaml
-    - packages/openapi/swagger.json
-    - packages/openapi/docs.go
-    - packages/openapi/generated/**
+    - services/api/db/**
+    - contracts/openapi.yaml
+    - contracts/generated/**
   # Data-destroying or environment-touching commands, checked against the run log.
   never_run:
-    - make migrate
+    - make db-migrate        # a runner has no database
     - make db-push
-    - make minio-push
     - psql
   secret_paths: [".env", ".env.*"]
 
 prompt:
   preamble_file: .agent/rules.md
   notes:
-    - "Schema change: a human must run `make migrate` before merge."
+    - "Schema change: a human must run the migration before merge."
 
 brain:
   name: pi
   model: ""                    # "" = the fleet default
   thinking: high
+
+# A label on a single issue can override the above for that run:
+#   model:provider/strong      thinking:low      brain:opencode
+labels:
+  override: true
+  model_prefix: "model:"
+  thinking_prefix: "thinking:"
+  brain_prefix: "brain:"
 
 workflows:
   implement:

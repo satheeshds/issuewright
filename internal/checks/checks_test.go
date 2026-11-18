@@ -18,20 +18,20 @@ func TestMatchGlobs(t *testing.T) {
 		pattern, path string
 		want          bool
 	}{
-		{"apps/api_server/**/*.go", "apps/api_server/internal/auth/handler.go", true},
-		{"apps/api_server/**/*.go", "apps/api_server/main.go", true},
-		{"apps/api_server/**/*.go", "apps/admin/src/App.tsx", false},
-		{"**/*.dart", "apps/daily_fish_mobile/lib/main.dart", true},
+		{"services/api/**/*.go", "services/api/internal/auth/handler.go", true},
+		{"services/api/**/*.go", "services/api/main.go", true},
+		{"services/api/**/*.go", "web/src/App.tsx", false},
+		{"**/*.dart", "mobile/lib/main.dart", true},
 		{"**/*.dart", "main.dart", true},
 		{"db/*.go", "db/users.go", true},
 		{"db/*.go", "db/nested/users.go", false},
 		{".env", ".env", true},
 		{".env.*", ".env.local", true},
 		{".env.*", "config/.env.local", false},
-		{"apps/api_server/internal/*/handler.go", "apps/api_server/internal/cart/handler.go", true},
-		{"apps/api_server/internal/*/handler.go", "apps/api_server/internal/a/b/handler.go", false},
-		{"packages/openapi/**", "packages/openapi/generated/dart_client/lib/api.dart", true},
-		{"apps/admin/**", "apps/admin", false},
+		{"services/api/internal/*/handler.go", "services/api/internal/cart/handler.go", true},
+		{"services/api/internal/*/handler.go", "services/api/internal/a/b/handler.go", false},
+		{"contracts/**", "contracts/generated/client/lib/api.dart", true},
+		{"web/**", "web", false},
 		{"**", "anything/at/all.txt", true},
 	}
 	for _, tc := range cases {
@@ -47,13 +47,13 @@ func TestSelectPicksChecksForChangedPaths(t *testing.T) {
 	prof := &config.Profile{
 		Version: 1,
 		Checks: []config.Check{
-			{Name: "go", Paths: []string{"apps/api_server/**/*.go"}, Run: []string{"true"}},
-			{Name: "admin", Paths: []string{"apps/admin/**"}, Run: []string{"true"}},
+			{Name: "go", Paths: []string{"services/api/**/*.go"}, Run: []string{"true"}},
+			{Name: "web", Paths: []string{"web/**"}, Run: []string{"true"}},
 			{Name: "mobile", Paths: []string{"**/*.dart"}, Run: []string{"true"}},
 		},
 	}
-	got := Select(prof, []string{"apps/admin/src/App.tsx", "apps/daily_fish_mobile/lib/a.dart"})
-	if len(got) != 2 || got[0].Name != "admin" || got[1].Name != "mobile" {
+	got := Select(prof, []string{"web/src/App.tsx", "mobile/lib/a.dart"})
+	if len(got) != 2 || got[0].Name != "web" || got[1].Name != "mobile" {
 		t.Fatalf("selected = %+v", got)
 	}
 	if n := len(Select(prof, []string{"README.md"})); n != 0 {
@@ -168,15 +168,15 @@ func TestSecretAndDeniedWrites(t *testing.T) {
 }
 
 func TestForbiddenCommand(t *testing.T) {
-	never := []string{"make migrate", "make db-push"}
+	never := []string{"make db-reset", "make db-push"}
 	cases := map[string]bool{
-		"make migrate":                       true,
-		"make migrate && echo done":          true,
-		"cd apps/api_server && make migrate": true,
-		"make   migrate":                     true,
-		"make migrations":                    false,
-		"make db-push":                       true,
-		"make test":                          false,
+		"make db-reset":                    true,
+		"make db-reset && echo done":       true,
+		"cd services/api && make db-reset": true,
+		"make   db-reset":                  true,
+		"make migrations":                  false,
+		"make db-push":                     true,
+		"make test":                        false,
 	}
 	for cmd, want := range cases {
 		_, got := ForbiddenCommand(never, cmd)
@@ -192,7 +192,7 @@ func TestScanToolCallsEnforcesNeverRun(t *testing.T) {
 	body := strings.Join([]string{
 		`{"type":"message_update","usage":{"totalTokens":5}}`,
 		`{"type":"tool_execution_start","toolCallId":"1","toolName":"bash","args":{"command":"go test ./..."}}`,
-		`{"type":"tool_execution_start","toolCallId":"2","toolName":"bash","args":{"command":"make migrate && echo ok"}}`,
+		`{"type":"tool_execution_start","toolCallId":"2","toolName":"bash","args":{"command":"make db-reset && echo ok"}}`,
 		`{"type":"tool_execution_end","toolCallId":"2","toolName":"bash","isError":false}`,
 	}, "\n")
 	if err := os.WriteFile(logPath, []byte(body), 0o644); err != nil {
@@ -205,8 +205,8 @@ func TestScanToolCallsEnforcesNeverRun(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("calls = %+v", calls)
 	}
-	violations := ForbiddenCalls(calls, []string{"make migrate"})
-	if len(violations) != 1 || !strings.Contains(violations[0], "make migrate") {
+	violations := ForbiddenCalls(calls, []string{"make db-reset"})
+	if len(violations) != 1 || !strings.Contains(violations[0], "make db-reset") {
 		t.Fatalf("violations = %v", violations)
 	}
 }

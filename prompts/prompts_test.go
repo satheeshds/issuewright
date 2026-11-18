@@ -7,12 +7,12 @@ import (
 
 func TestRenderSubstitutesEverything(t *testing.T) {
 	got, err := Render("implement", Inputs{
-		Repo: "acme/demo", Number: 39, Title: "Improve observability",
-		Body: "add metrics", Branch: "agent/issue-39", BaseBranch: "main",
-		Workdir:       "/srv/agent/work/demo/issue-39",
+		Repo: "acme/demo", Number: 12, Title: "Add metrics",
+		Body: "instrument the API", Branch: "agent/issue-12", BaseBranch: "main",
+		Workdir:       "/srv/agent/work/demo/issue-12",
 		Rules:         "schema first, then make sqlc",
-		WriteDenylist: []string{"db/*.go"},
-		NeverRun:      []string{"make migrate"},
+		WriteDenylist: []string{"generated/*.go"},
+		NeverRun:      []string{"make db-reset"},
 		SecretPaths:   []string{".env"},
 		Notes:         []string{"note one"},
 	})
@@ -20,10 +20,10 @@ func TestRenderSubstitutesEverything(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	for _, want := range []string{
-		"issue #39", "acme/demo", "Improve observability", "add metrics",
-		"agent/issue-39", "schema first, then make sqlc",
-		"- db/*.go", "- make migrate", "- .env", "note one",
-		"/srv/agent/work/demo/issue-39",
+		"issue #12", "acme/demo", "Add metrics", "instrument the API",
+		"agent/issue-12", "schema first, then make sqlc",
+		"- generated/*.go", "- make db-reset", "- .env", "note one",
+		"/srv/agent/work/demo/issue-12",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered prompt missing %q", want)

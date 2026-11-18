@@ -80,6 +80,7 @@ Most specific wins:
 
 ```
 --brain/--model/--thinking flags
+  → a label on the issue (model:…, thinking:…, brain:…) when the profile allows it
   → .agent/agent.yaml  brain: {name, model, thinking}
     → [[repo]] in /srv/agent/config.toml
       → [agent] in /srv/agent/config.toml

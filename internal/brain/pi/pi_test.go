@@ -34,9 +34,9 @@ exit 0
 `)
 	var log bytes.Buffer
 	res, err := d.Run(context.Background(), brain.Spec{
-		Prompt:   "implement issue #39",
+		Prompt:   "implement issue 39",
 		Workdir:  t.TempDir(),
-		Model:    "opencode-go/kimi",
+		Model:    "example/model-a",
 		Thinking: "high",
 		Timeout:  time.Minute,
 	}, &log)
@@ -54,12 +54,12 @@ exit 0
 	}
 
 	args := readLines(t, argsFile)
-	for _, want := range []string{"--print", "--mode", "json", "--approve", "--model", "opencode-go/kimi", "--thinking", "high"} {
+	for _, want := range []string{"--print", "--mode", "json", "--approve", "--model", "example/model-a", "--thinking", "high"} {
 		if !contains(args, want) {
 			t.Errorf("args missing %q: %v", want, args)
 		}
 	}
-	if args[len(args)-1] != "implement issue #39" {
+	if args[len(args)-1] != "implement issue 39" {
 		t.Errorf("prompt must be the final positional arg: %v", args)
 	}
 	if !strings.Contains(log.String(), `"message_end"`) {

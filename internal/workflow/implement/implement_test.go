@@ -11,19 +11,19 @@ func job() workflow.Job {
 	return workflow.Job{
 		Kind:       workflow.IssueAssigned,
 		Repo:       "acme/demo",
-		Number:     39,
+		Number:     12,
 		Title:      "Add metrics",
 		Body:       "instrument the API",
-		Branch:     "agent/issue-39",
+		Branch:     "agent/issue-12",
 		BaseBranch: "main",
-		Workdir:    "/w/issue-39",
+		Workdir:    "/w/issue-12",
 		Rules:      "schema first",
 		Protect: workflow.Protect{
-			WriteDenylist: []string{"db/*.go"},
-			NeverRun:      []string{"make migrate"},
+			WriteDenylist: []string{"generated/*.go"},
+			NeverRun:      []string{"make db-reset"},
 			SecretPaths:   []string{".env"},
 		},
-		Notes: []string{"needs make migrate"},
+		Notes: []string{"needs a migration"},
 	}
 }
 
@@ -46,10 +46,10 @@ func TestFreshPromptCarriesJobAndRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if spec.Workdir != "/w/issue-39" {
+	if spec.Workdir != "/w/issue-12" {
 		t.Errorf("workdir = %q", spec.Workdir)
 	}
-	for _, want := range []string{"issue #39", "acme/demo", "Add metrics", "schema first", "db/*.go", "make migrate", "needs make migrate"} {
+	for _, want := range []string{"issue #12", "acme/demo", "Add metrics", "schema first", "generated/*.go", "make db-reset", "needs a migration"} {
 		if !strings.Contains(spec.Prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
@@ -62,7 +62,7 @@ func TestFreshPromptCarriesJobAndRules(t *testing.T) {
 func TestResumePromptIsShortAndPointsAtExistingWork(t *testing.T) {
 	j := job()
 	j.Resume = true
-	j.ExistingWork = "abc123 feat: add metric collector"
+	j.ExistingWork = "abc123 feat: add a collector"
 	spec, err := New().Prompt(j)
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)

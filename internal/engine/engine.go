@@ -385,8 +385,8 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		return e.blocked(res, perms, err)
 	}
 
-	choice := e.BrainChoice()
-	driver, err := e.driver()
+	choice := e.choiceFor(labels)
+	driver, err := e.driverFor(choice)
 	if err != nil {
 		return e.blocked(res, perms, err)
 	}
@@ -531,7 +531,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		if !perms.Write {
 			return fail(wf.Name() + " cannot publish without Write permission")
 		}
-		prURL, err := e.publish(ctx, res.Number, branch, title, summary, runRes.Summary, checkResults)
+		prURL, err := e.publish(ctx, res.Number, branch, title, summary, runRes.Summary, choice, checkResults)
 		if err != nil {
 			return fail(err.Error())
 		}
@@ -559,7 +559,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 }
 
 // publish commits leftovers, pushes the branch, and opens or updates the PR.
-func (e *Engine) publish(ctx context.Context, number int, branch, title, summary, brainSummary string, results []checks.Result) (string, error) {
+func (e *Engine) publish(ctx context.Context, number int, branch, title, summary, brainSummary string, choice config.BrainChoice, results []checks.Result) (string, error) {
 	dir := e.wts.IssuePath(number)
 	if branch == e.prof.BaseBranch {
 		return "", fmt.Errorf("refusing to publish to the base branch %q", branch)
@@ -569,7 +569,7 @@ func (e *Engine) publish(ctx context.Context, number int, branch, title, summary
 	}
 
 	// The agent's report is never committed, but always read first.
-	body := e.prBody(number, summary, brainSummary, results)
+	body := e.prBody(number, summary, brainSummary, choice, results)
 	_ = os.Remove(filepath.Join(dir, prompts.SummaryFile))
 	_ = os.Remove(filepath.Join(dir, prompts.BlockedFile))
 	_ = os.Remove(filepath.Join(dir, prompts.ReviewFile))
@@ -605,7 +605,7 @@ func (e *Engine) publish(ctx context.Context, number int, branch, title, summary
 	return created.URL, nil
 }
 
-func (e *Engine) prBody(number int, summary, brainSummary string, results []checks.Result) string {
+func (e *Engine) prBody(number int, summary, brainSummary string, choice config.BrainChoice, results []checks.Result) string {
 	body := strings.TrimSpace(summary)
 	if body == "" {
 		// No SUMMARY.md (a resumed run often just says "done"): use the brain's
@@ -627,7 +627,20 @@ func (e *Engine) prBody(number int, summary, brainSummary string, results []chec
 			b.WriteString("- " + n + "\n")
 		}
 	}
-	fmt.Fprintf(&b, "\n<sub>Built by issuewright with the `%s` brain.</sub>\n", e.BrainChoice().Name)
+	// Name the brain, model and thinking level: the PR is the audit trail, and a
+	// label can change which model produced the work.
+	attribution := fmt.Sprintf("Built by issuewright with the `%s` brain", choice.Name)
+	var settings []string
+	if choice.Model != "" {
+		settings = append(settings, "model `"+choice.Model+"`")
+	}
+	if choice.Thinking != "" {
+		settings = append(settings, "thinking `"+choice.Thinking+"`")
+	}
+	if len(settings) > 0 {
+		attribution += " (" + strings.Join(settings, ", ") + ")"
+	}
+	fmt.Fprintf(&b, "\n<sub>%s.</sub>\n", attribution)
 	if !strings.Contains(body, fmt.Sprintf("Closes #%d", number)) {
 		fmt.Fprintf(&b, "\nCloses #%d\n", number)
 	}
@@ -662,11 +675,37 @@ func (e *Engine) rulesFor(name string) (string, error) {
 	return string(raw), nil
 }
 
-func (e *Engine) driver() (brain.Driver, error) {
+// choiceFor resolves the brain for one job: labels from the issue are more
+// specific than the profile, which is more specific than the fleet default.
+func (e *Engine) choiceFor(labels []string) config.BrainChoice {
+	labelOv, warnings := e.prof.LabelOverrides(labels)
+	for _, w := range warnings {
+		e.logf("warning: %s", w)
+	}
+	if labelOv.Brain != "" {
+		if _, err := brain.Get(labelOv.Brain); err != nil {
+			e.logf("warning: ignoring brain label: %v", err)
+			labelOv.Brain = ""
+		}
+	}
+	if labelOv.Thinking != "" && !brain.ValidThinking(labelOv.Thinking) {
+		e.logf("warning: ignoring thinking label %q: not one of %v", labelOv.Thinking, brain.ThinkingLevels)
+		labelOv.Thinking = ""
+	}
+	ov := config.MergeOverrides(e.opt.Override, labelOv)
+	if ov != e.opt.Override {
+		e.logf("label overrides for this issue: brain=%q model=%q thinking=%q", ov.Brain, ov.Model, ov.Thinking)
+	}
+	return config.ResolveBrain(e.opt.Agent, e.opt.Repo, e.prof, ov)
+}
+
+func (e *Engine) driver() (brain.Driver, error) { return e.driverFor(e.BrainChoice()) }
+
+func (e *Engine) driverFor(choice config.BrainChoice) (brain.Driver, error) {
 	if e.opt.Driver != nil {
 		return e.opt.Driver, nil
 	}
-	return brain.Get(e.BrainChoice().Name)
+	return brain.Get(choice.Name)
 }
 
 func (e *Engine) readSummary(dir string) (string, error) {

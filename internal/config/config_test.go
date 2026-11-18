@@ -22,7 +22,7 @@ func TestLoadFleetConfigAppliesDefaults(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 	writeFile(t, path, `
 [agent]
-model = "opencode-go/kimi"
+model = "example/model-a"
 
 [[repo]]
 name = "demo"
@@ -43,7 +43,7 @@ bot = "demo-bot[bot]"
 	if cfg.Agent.MaxRunMinutes != DefaultMaxRunMinutes || cfg.Agent.PollMinutes != DefaultPollMinutes {
 		t.Errorf("timeouts = %d/%d", cfg.Agent.MaxRunMinutes, cfg.Agent.PollMinutes)
 	}
-	if cfg.Agent.Model != "opencode-go/kimi" {
+	if cfg.Agent.Model != "example/model-a" {
 		t.Errorf("explicit model lost: %q", cfg.Agent.Model)
 	}
 }
@@ -259,5 +259,73 @@ func TestPickupConflict(t *testing.T) {
 	oneOnly.Issue.Pickup = "label"
 	if msg := oneOnly.PickupConflict("implement"); msg != "" {
 		t.Errorf("a single setting is not a conflict: %q", msg)
+	}
+}
+
+func TestLabelOverrides(t *testing.T) {
+	p := Defaults()
+	cases := []struct {
+		name   string
+		labels []string
+		want   Overrides
+	}{
+		{"none", []string{"bug", "agent:go"}, Overrides{}},
+		{"model", []string{"model:provider/fast"}, Overrides{Model: "provider/fast"}},
+		{"thinking", []string{"thinking:HIGH"}, Overrides{Thinking: "high"}},
+		{"brain", []string{"brain:opencode"}, Overrides{Brain: "opencode"}},
+		{"all three", []string{"agent:go", "model:m1", "thinking:low", "brain:pi"},
+			Overrides{Brain: "pi", Model: "m1", Thinking: "low"}},
+		{"case-insensitive prefix", []string{"MODEL:m2"}, Overrides{Model: "m2"}},
+		{"empty value ignored", []string{"model:"}, Overrides{}},
+		{"unprefixed lookalike", []string{"modelled: thing"}, Overrides{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warns := p.LabelOverrides(tc.labels)
+			if got != tc.want {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+			if len(warns) != 0 {
+				t.Errorf("unexpected warnings: %v", warns)
+			}
+		})
+	}
+}
+
+func TestLabelOverridesConflictsAndDisable(t *testing.T) {
+	p := Defaults()
+	got, warns := p.LabelOverrides([]string{"model:first", "model:second"})
+	if got.Model != "first" {
+		t.Errorf("the first label should win: %+v", got)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "two model labels") {
+		t.Errorf("warnings = %v", warns)
+	}
+
+	off := false
+	p.Labels.Override = &off
+	if got, warns := p.LabelOverrides([]string{"model:x", "brain:y"}); got != (Overrides{}) || warns != nil {
+		t.Errorf("override=false must ignore labels: %+v %v", got, warns)
+	}
+
+	// A custom prefix, and disabling one channel by emptying its prefix.
+	custom := Defaults()
+	custom.Labels.ModelPrefix = "llm="
+	custom.Labels.BrainPrefix = ""
+	got, _ = custom.LabelOverrides([]string{"llm=big", "brain:pi", "model:ignored"})
+	if got.Model != "big" || got.Brain != "" {
+		t.Errorf("custom prefixes = %+v", got)
+	}
+}
+
+func TestMergeOverridesFlagsWin(t *testing.T) {
+	flags := Overrides{Model: "from-flag"}
+	labels := Overrides{Brain: "opencode", Model: "from-label", Thinking: "low"}
+	got := MergeOverrides(flags, labels)
+	if got.Model != "from-flag" {
+		t.Errorf("flag should win: %+v", got)
+	}
+	if got.Brain != "opencode" || got.Thinking != "low" {
+		t.Errorf("label should fill the gaps: %+v", got)
 	}
 }
