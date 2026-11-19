@@ -256,3 +256,30 @@ func TestPushBranchWithoutTokenKeepsThePlainCommand(t *testing.T) {
 		t.Errorf("a tokenless push should not configure a helper:\n%s", got)
 	}
 }
+
+// A pull request discovered *by* a label must carry that label: the workflow
+// trigger matches on it, and a real run silently planned no review because the
+// PR JSON had no labels field at all.
+func TestCLIListsPRLabels(t *testing.T) {
+	dir := t.TempDir()
+	c := fakeGH(t, dir)
+	writeCanned(t, dir, "prs.json", `[{"number": 47, "headRefName": "b", "headRefOid": "abc123",
+	  "labels": [{"name": "review:go"}, {"name": "needs-review"}]}]`)
+
+	prs, err := c.ListPRsWithLabel(context.Background(), "acme/demo", "review:go")
+	if err != nil {
+		t.Fatalf("ListPRsWithLabel: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("prs = %+v", prs)
+	}
+	if len(prs[0].Labels) != 2 || prs[0].Labels[0] != "review:go" {
+		t.Errorf("labels = %v", prs[0].Labels)
+	}
+	if prs[0].HeadRefOID != "abc123" {
+		t.Errorf("head SHA missing: %q", prs[0].HeadRefOID)
+	}
+	if args := readLog(t, filepath.Join(dir, "gh.log")); !strings.Contains(args, "labels") {
+		t.Errorf("the gh query does not ask for labels: %s", args)
+	}
+}

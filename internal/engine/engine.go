@@ -232,8 +232,14 @@ func (e *Engine) discover(ctx context.Context) ([]workflow.Event, []github.Issue
 			}
 			seenPR[pr.Number] = true
 			prs = append(prs, pr)
+			// The label that matched is guaranteed on the event, whatever the
+			// client reported: discovery has already proven it is there.
+			labels := pr.Labels
+			if !hasLabel(labels, label) {
+				labels = append(append([]string{}, labels...), label)
+			}
 			events = append(events, workflow.Event{
-				Kind: workflow.PRLabel, Number: pr.Number, Title: pr.Title, Labels: pr.Labels,
+				Kind: workflow.PRLabel, Number: pr.Number, Title: pr.Title, Labels: labels,
 			})
 		}
 	}

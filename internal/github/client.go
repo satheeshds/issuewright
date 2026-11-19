@@ -196,15 +196,24 @@ type prJSON struct {
 	BaseRefName string `json:"baseRefName"`
 	IsDraft     bool   `json:"isDraft"`
 	State       string `json:"state"`
+	Labels      []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
 }
 
 func (p prJSON) toPR() PR {
-	return PR{Number: p.Number, Title: p.Title, Body: p.Body, URL: p.URL,
+	out := PR{Number: p.Number, Title: p.Title, Body: p.Body, URL: p.URL,
 		HeadRef: p.HeadRefName, HeadRefOID: p.HeadRefOID, BaseRef: p.BaseRefName,
 		Draft: p.IsDraft, State: p.State}
+	for _, l := range p.Labels {
+		out.Labels = append(out.Labels, l.Name)
+	}
+	return out
 }
 
-const prFields = "number,title,body,url,headRefName,headRefOid,baseRefName,isDraft,state"
+// labels must be here: a pull request discovered *by* a label needs that label on
+// the event, or the workflow's trigger can never match.
+const prFields = "number,title,body,url,headRefName,headRefOid,baseRefName,isDraft,state,labels"
 
 func (c *CLI) ListReviewRequestedPRs(ctx context.Context, slug, login string) ([]PR, error) {
 	out, err := c.gh(ctx, "pr", "list", "--repo", slug, "--state", "open",

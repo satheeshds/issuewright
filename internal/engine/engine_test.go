@@ -878,3 +878,31 @@ func TestReviewCanUseADifferentModelThanImplement(t *testing.T) {
 		t.Errorf("the review model should be visible in the log:\n%s", logs.String())
 	}
 }
+
+// Regression: a PR listed by label whose JSON omits labels (the client used to
+// drop them) must still trigger the review, because discovery already proved the
+// label is there.
+func TestReviewTriggersEvenIfTheClientOmitsLabels(t *testing.T) {
+	h := newHarness(t)
+	h.gh.PRs = []github.PR{{
+		Number: 12, Title: "work", HeadRef: "agent/issue-12", BaseRef: "main",
+		HeadRefOID: "sha12", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-12")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-12", dir, "origin/main")
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "feat: work")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-12")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/12/head", sha)
+	h.gh.PRs[0].HeadRefOID = sha
+
+	e, logs := h.engine(t, &stubDriver{file: prompts.ReviewFile, content: "## Summary\nfine\n"})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if len(h.gh.Reviews[12]) != 1 {
+		t.Errorf("no review posted: %v", h.gh.Calls)
+	}
+}
