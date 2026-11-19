@@ -217,3 +217,30 @@ func TestProvisionMakesPiReachableForTheServiceUser(t *testing.T) {
 		t.Error("the instructions lost their wording to shell expansion")
 	}
 }
+
+// A check that runs `go test` or `flutter test` fails with 127 unless the
+// service PATH reaches the toolchains. The agent noticed this itself on a live
+// run: "go: command not found" while verifying a docs change.
+func TestProvisionWritesAToolchainPath(t *testing.T) {
+	out, code := runScript(t, "--slug", "acme/demo", "--bot", "bot", "--root", "/tmp/iw-root")
+	if code != 0 {
+		t.Fatalf("dry run failed (%d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "PATH for the agent:") {
+		t.Fatalf("no PATH reported:\n%s", out)
+	}
+	line := ""
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "PATH for the agent:") {
+			line = l
+		}
+	}
+	for _, want := range []string{"/usr/local/bin", "/usr/bin", "/tmp/iw-root/bin"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("PATH %q missing %q", strings.TrimSpace(line), want)
+		}
+	}
+	if !strings.Contains(out, "would set PATH=") {
+		t.Errorf("the PATH is not written into agent.env:\n%s", out)
+	}
+}

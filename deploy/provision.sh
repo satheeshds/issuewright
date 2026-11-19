@@ -220,6 +220,31 @@ else
 	fi
 fi
 
+# --- toolchain PATH --------------------------------------------------------
+# The unit runs with a minimal PATH, and agent.env's PATH wins over the unit's.
+# Build it from where the tools actually are, so `go test` / `flutter test` in a
+# check do not fail with 127.
+agent_home_tc=$(getent passwd "$AGENT_USER" | cut -d: -f6 || true)
+[ -n "$agent_home_tc" ] || agent_home_tc=/home/$AGENT_USER
+tool_dirs=""
+for tool in go gofmt flutter dart node npm pi opencode gh; do
+	bin=$(command -v "$tool" 2>/dev/null || true)
+	[ -n "$bin" ] && tool_dirs="$tool_dirs:$(dirname "$bin")"
+done
+# Well-known locations that a root shell's PATH would not reveal. Only existing
+# directories are added, and only ones the agent user can actually read.
+for dir in /usr/local/go/bin /usr/local/bin "$ROOT/bin" "$agent_home_tc/.local/bin" /opt/flutter/bin /snap/bin; do
+	[ -d "$dir" ] || continue
+	if [ "$APPLY" = 1 ] && ! sudo -u "$AGENT_USER" test -r "$dir"; then
+		note "WARNING: $dir exists but $AGENT_USER cannot read it; checks that need it will fail"
+		continue
+	fi
+	tool_dirs="$tool_dirs:$dir"
+done
+TOOLCHAIN_PATH=$(printf '%s' "/usr/local/bin:/usr/bin:/bin:$ROOT/bin$tool_dirs" |
+	tr ':' '\n' | awk '!seen[$0]++' | paste -sd: -)
+note "PATH for the agent: $TOOLCHAIN_PATH"
+
 # --- configuration ---------------------------------------------------------
 step "configuration"
 write_file "$ROOT/config.toml" 644 <<EOF
@@ -252,10 +277,21 @@ write_file "$ROOT/agent.env" 600 <<'EOF'
 # systemd units get a minimal PATH. Add wherever go/flutter live, or every check
 # that needs them fails with "not found".
 EOF
-if [ "$APPLY" = 1 ]; then
-	printf 'PATH=/usr/local/bin:/usr/bin:/bin:%s/bin\n' "$ROOT" >>"$ROOT/agent.env"
+if [ "$APPLY" = 1 ] && [ -f "$ROOT/agent.env" ]; then
+	{
+		tmp=$(mktemp)
+		if grep -qE '^PATH=' "$ROOT/agent.env"; then
+			sed "s|^PATH=.*|PATH=$TOOLCHAIN_PATH|" "$ROOT/agent.env" >"$tmp"
+		else
+			cat "$ROOT/agent.env" >"$tmp"
+			printf 'PATH=%s\n' "$TOOLCHAIN_PATH" >>"$tmp"
+		fi
+		cat "$tmp" >"$ROOT/agent.env"
+		rm -f "$tmp"
+		note "PATH set in $ROOT/agent.env"
+	}
 else
-	note "[dry-run] would append PATH=/usr/local/bin:/usr/bin:/bin:$ROOT/bin to agent.env"
+	note "[dry-run] would set PATH=$TOOLCHAIN_PATH in $ROOT/agent.env"
 fi
 cat >/dev/null <<'EOF'
 
