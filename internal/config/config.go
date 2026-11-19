@@ -17,23 +17,26 @@ import (
 // Fleet defaults. These are intentionally not per-repo: a repo that needs a
 // different value says so in its [[repo]] block or its profile.
 const (
-	DefaultWorkroot       = "/srv/agent/work"
-	DefaultLogdir         = "/srv/agent/logs"
-	DefaultReposRoot      = "/srv/agent/repos"
-	DefaultBrain          = "pi"
-	DefaultThinking       = "high"
-	DefaultMaxRunMinutes  = 90
-	DefaultPollMinutes    = 10
-	DefaultGhBin          = "gh"
-	DefaultBaseBranch     = "main"
-	DefaultBranchPrefix   = "agent/"
-	DefaultInProgress     = "agent:in-progress"
-	DefaultBlocked        = "agent:blocked"
-	DefaultDone           = "agent:done"
-	DefaultForceLabel     = "agent:go"
-	DefaultPickupMode     = "assignee"
-	DefaultReviewLabel    = "review:go"
-	SupportedProfileMajor = 1
+	DefaultWorkroot              = "/srv/agent/work"
+	DefaultLogdir                = "/srv/agent/logs"
+	DefaultReposRoot             = "/srv/agent/repos"
+	DefaultBrain                 = "pi"
+	DefaultThinking              = "high"
+	DefaultMaxRunMinutes         = 90
+	DefaultPollMinutes           = 10
+	DefaultGhBin                 = "gh"
+	DefaultBaseBranch            = "main"
+	DefaultBranchPrefix          = "agent/"
+	DefaultInProgress            = "agent:in-progress"
+	DefaultBlocked               = "agent:blocked"
+	DefaultDone                  = "agent:done"
+	DefaultForceLabel            = "agent:go"
+	DefaultPickupMode            = "assignee"
+	DefaultReviewLabel           = "review:go"
+	DefaultReviewInProgressLabel = "review:in-progress"
+	DefaultReviewDoneLabel       = "review:done"
+	DefaultReviewBlockedLabel    = "review:blocked"
+	SupportedProfileMajor        = 1
 )
 
 // Config is the fleet file: one machine, N repos.

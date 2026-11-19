@@ -34,9 +34,14 @@ func (e *Engine) Triggers() []workflow.Trigger {
 	}
 }
 
-// Perms implements workflow.Workflow. Note what is missing: Write.
+// Perms implements workflow.Workflow.
+//
+// Note what is missing: Write. A reviewer still cannot push a commit or change
+// code. Label is allowed because the review's lifecycle lives in the PR's labels
+// (review:go → review:in-progress → review:done), which is how a human asks for a
+// re-review without touching the runner's state.
 func (e *Engine) Perms() workflow.Perms {
-	return workflow.Perms{Write: false, Comment: true, Label: false, Checks: true}
+	return workflow.Perms{Write: false, Comment: true, Label: true, Checks: true}
 }
 
 // Prompt implements workflow.Workflow.

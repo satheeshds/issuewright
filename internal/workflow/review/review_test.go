@@ -15,8 +15,10 @@ func TestPermsCannotWrite(t *testing.T) {
 	if !p.Comment || !p.Checks {
 		t.Errorf("review must be allowed to comment and run read-only checks: %+v", p)
 	}
-	if p.Label {
-		t.Error("review must not relabel the PR")
+	// Labels are allowed: the review's lifecycle lives in them
+	// (review:go → review:in-progress → review:done). Code writes are not.
+	if !p.Label {
+		t.Error("review needs Label to manage its own lifecycle")
 	}
 }
 

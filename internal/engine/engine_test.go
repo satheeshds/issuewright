@@ -298,6 +298,7 @@ func TestReviewWorkflowCannotWrite(t *testing.T) {
 	sha := gitRun(t, dir, "rev-parse", "HEAD")
 	gitRun(t, h.bare, "update-ref", "refs/pull/7/head", sha)
 
+	h.gh.ReviewRequests = []int{7}
 	e, logs := h.engine(t, &stubDriver{file: prompts.ReviewFile, content: "## Summary\nlooks fine\n"})
 	results, err := e.Tick(context.Background())
 	if err != nil {
@@ -319,9 +320,16 @@ func TestReviewWorkflowCannotWrite(t *testing.T) {
 	if !strings.Contains(body, "✅ `all`") {
 		t.Errorf("review must report the read-only checks it ran: %q", body)
 	}
-	// No labels were touched: review has no Label permission.
-	if len(h.gh.Labels[7]) != 0 {
-		t.Errorf("review relabelled the PR: %v", h.gh.Labels[7])
+	// The lifecycle labels move, and nothing else: no agent:done on a PR, no push.
+	labels := strings.Join(h.gh.Labels[7], ",")
+	if !strings.Contains(labels, "review:done") {
+		t.Errorf("review should mark itself done: %q", labels)
+	}
+	if strings.Contains(labels, "review:in-progress") {
+		t.Errorf("the in-progress label was left behind: %q", labels)
+	}
+	if strings.Contains(labels, "agent:done") {
+		t.Errorf("a review must not mark an issue done: %q", labels)
 	}
 }
 
@@ -790,8 +798,9 @@ func TestReviewSkipsTheSameRevisionAndRepeatsOnNewOnes(t *testing.T) {
 	h := newHarness(t)
 	h.gh.PRs = []github.PR{{
 		Number: 9, Title: "work", HeadRef: "agent/issue-9", BaseRef: "main",
-		HeadRefOID: "sha2222", Labels: []string{"review:go"},
+		HeadRefOID: "sha2222",
 	}}
+	h.gh.ReviewRequests = []int{9}
 	dir := filepath.Join(h.agent.Workroot, "demo", "issue-9")
 	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-9", dir, "origin/main")
 	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
@@ -1015,8 +1024,11 @@ func TestForceReRunsASettledJobAndAReviewedCommit(t *testing.T) {
 	h := newHarness(t)
 	h.gh.PRs = []github.PR{{
 		Number: 15, Title: "work", HeadRef: "agent/issue-15", BaseRef: "main",
-		HeadRefOID: "sha15", Labels: []string{"review:go"},
+		HeadRefOID: "sha15",
 	}}
+	// The review-request trigger has no label to reset, so that is where the
+	// once-per-revision guard (and --force) still matter.
+	h.gh.ReviewRequests = []int{15}
 	dir := filepath.Join(h.agent.Workroot, "demo", "issue-15")
 	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-15", dir, "origin/main")
 	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
@@ -1050,5 +1062,98 @@ func TestForceReRunsASettledJobAndAReviewedCommit(t *testing.T) {
 	}
 	if len(h.gh.Reviews[15]) != 2 {
 		t.Errorf("--force did not re-review: %v", h.gh.Calls)
+	}
+}
+
+// The PR's labels are the review's state machine: the trigger is consumed, the
+// in-progress label appears, and the outcome label replaces it. That is also what
+// stops a review from running twice without any hidden state.
+func TestReviewLabelLifecycle(t *testing.T) {
+	h := newHarness(t)
+	h.gh.PRs = []github.PR{{
+		Number: 16, Title: "work", HeadRef: "agent/issue-16", BaseRef: "main",
+		HeadRefOID: "sha16", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-16")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-16", dir, "origin/main")
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "feat: x")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-16")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/16/head", sha)
+	h.gh.PRs[0].HeadRefOID = sha
+
+	e, logs := h.engine(t, &stubDriver{file: prompts.ReviewFile, content: "## Summary\nfine\n"})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+
+	// The trigger was consumed and the outcome recorded, in that order.
+	var order []string
+	for _, call := range h.gh.Calls {
+		switch {
+		case strings.HasPrefix(call, "remove-label 16 review:go"):
+			order = append(order, "go-removed")
+		case strings.HasPrefix(call, "add-label 16 review:in-progress"):
+			order = append(order, "in-progress")
+		case strings.HasPrefix(call, "add-label 16 review:done"):
+			order = append(order, "done")
+		}
+	}
+	want := []string{"go-removed", "in-progress", "done"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("label order = %v, want %v", order, want)
+	}
+
+	// The trigger is gone, so the next tick has nothing to pick up even though the
+	// same commit is still there.
+	h.gh.PRs[0].Labels = []string{"review:done"}
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("second Tick: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("a done review was picked up again: %+v", results)
+	}
+
+	// Re-adding the trigger asks for another review of the same commit: no hidden
+	// state, no --force needed.
+	h.gh.PRs[0].Labels = []string{"review:go"}
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.gh.Reviews[16]) != 2 {
+		t.Errorf("re-adding review:go did not trigger a re-review: %v", h.gh.Calls)
+	}
+}
+
+// A failed review must not sit on review:in-progress forever.
+func TestBlockedReviewIsLabelled(t *testing.T) {
+	h := newHarness(t)
+	h.gh.PRs = []github.PR{{
+		Number: 17, Title: "work", HeadRef: "agent/issue-17", BaseRef: "main",
+		HeadRefOID: "sha17", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-17")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-17", dir, "origin/main")
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "feat: x")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-17")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/17/head", sha)
+	h.gh.PRs[0].HeadRefOID = sha
+
+	e, logs := h.engine(t, &stubDriver{fail: true})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	labels := strings.Join(h.gh.Labels[17], ",")
+	if !strings.Contains(labels, "review:blocked") {
+		t.Errorf("failed review not labelled: %q", labels)
+	}
+	if strings.Contains(labels, "review:in-progress") {
+		t.Errorf("in-progress left behind on failure: %q", labels)
 	}
 }

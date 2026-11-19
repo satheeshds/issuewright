@@ -25,6 +25,11 @@ type Fake struct {
 
 	// FailOn makes the named operation return an error.
 	FailOn string
+	// ReviewRequests lists the PR numbers GitHub would report as
+	// "review-requested:<login>". Empty by default because GitHub refuses to
+	// request review from most App bots — a Fake that returned everything hid a
+	// bug where the label path never ran.
+	ReviewRequests []int
 }
 
 func NewFake() *Fake {
@@ -103,7 +108,15 @@ func (f *Fake) ListReviewRequestedPRs(_ context.Context, slug, login string) ([]
 	if err := f.record("list-reviews %s %s", slug, login); err != nil {
 		return nil, err
 	}
-	return f.PRs, nil
+	var out []PR
+	for _, pr := range f.PRs {
+		for _, n := range f.ReviewRequests {
+			if pr.Number == n {
+				out = append(out, pr)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (f *Fake) ListPRsWithLabel(_ context.Context, slug, label string) ([]PR, error) {

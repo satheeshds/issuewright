@@ -276,18 +276,28 @@ Three ways, in order of how well they work:
 | PR opened with the bot as **requested reviewer** | only where the bot is a resolveable reviewer; requires the App to see the repo |
 | `issuewright run --pr N --workflow review` | manual, any time |
 
-A review runs **per revision**: the head commit is recorded, so the same commit is
-not reviewed twice while the label stays on the PR, and a new push is reviewed
-again. To re-review the *same* commit — after changing the prompt, the model, or the
-review format — force it:
+**The PR's labels are the state machine.** The runner only ever looks for the
+trigger label, and moves it through the lifecycle as it works:
+
+```
+review:go   ──claim──▶   review:in-progress   ──finish──▶   review:done
+                                          └──failure──▶   review:blocked
+```
+
+- adding `review:go` is the only thing that asks for a review;
+- the trigger is **consumed** on claim, so a review cannot be started twice — no
+  hidden state, nothing to delete;
+- to review again (a new commit, a changed prompt, another model) just re-add
+  `review:go`; `review:blocked` means it failed and is worth a look first.
+
+The labels are configurable (`issue.review_label`, `review_in_progress_label`,
+`review_done_label`, `review_blocked_label`) and created on first use. The other
+triggers — a requested review, a mention — have no label to reset, so they keep the
+once-per-head-commit guard; `--force` overrides any previous claim for one run:
 
 ```bash
 issuewright run --repo <repo> --pr 47 --workflow review --force
-```
-
-`--force` ignores the previous claim (a finished or blocked job, a reviewed
-revision) for that run only. Toggling the label does **not** do this: the skip is
-recorded in the claim, not in the label. There is a test for exactly that (`TestReviewSkipsTheSameRevisionAndRepeatsOnNewOnes`).
+``` There is a test for exactly that (`TestReviewSkipsTheSameRevisionAndRepeatsOnNewOnes`).
 
 ### Per-issue overrides by label
 

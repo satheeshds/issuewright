@@ -432,7 +432,12 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 
 	// A review is per revision: the same head commit must not be reviewed on every
 	// tick, and a new push must be.
-	if wf.Name() == "review" && pr.HeadRefOID != "" && !e.opt.Force {
+	// With label-driven reviews the PR's labels are the state machine, so the same
+	// commit can be reviewed again by re-adding the trigger label. The claim-based
+	// guard stays for the other triggers (a requested review, a mention), which
+	// have no label to reset.
+	if wf.Name() == "review" && sel.Event.Kind != workflow.PRLabel &&
+		pr.HeadRefOID != "" && !e.opt.Force {
 		if claim, ok, _ := e.store.LoadClaim(e.opt.Repo.Name, wf.Name(), sel.Event.Number); ok &&
 			claim.Detail == "reviewed:"+pr.HeadRefOID && claim.State == StateDone {
 			res.State = StateSkipped
@@ -477,9 +482,8 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 
 	// Claim it visibly, then run.
 	if perms.Label {
-		_ = e.opt.GitHub.EnsureLabel(ctx, e.opt.Repo.Slug, e.prof.Issue.InProgressLabel)
-		if err := e.opt.GitHub.AddLabel(ctx, e.opt.Repo.Slug, sel.Event.Number, e.prof.Issue.InProgressLabel); err != nil {
-			return e.blocked(res, perms, fmt.Errorf("claim label: %w", err))
+		if err := e.claimLabels(ctx, wf.Name(), sel.Event.Number); err != nil {
+			return e.blocked(res, perms, err)
 		}
 	}
 	if perms.Comment {
@@ -603,9 +607,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	}
 
 	if perms.Label {
-		_ = e.opt.GitHub.RemoveLabel(ctx, e.opt.Repo.Slug, res.Number, e.prof.Issue.InProgressLabel)
-		_ = e.opt.GitHub.EnsureLabel(ctx, e.opt.Repo.Slug, e.prof.Issue.DoneLabel)
-		_ = e.opt.GitHub.AddLabel(ctx, e.opt.Repo.Slug, res.Number, e.prof.Issue.DoneLabel)
+		e.finishLabels(ctx, wf.Name(), res.Number)
 	}
 	claim.State, claim.Detail = StateDone, detail
 	_ = e.store.SaveClaim(claim)
@@ -901,6 +903,49 @@ func (e *Engine) forbiddenCalls(logPath string) ([]string, error) {
 	return checks.ForbiddenCalls(calls, e.prof.Protect.NeverRun), nil
 }
 
+// claimLabels marks a job as running. For a review the trigger label is consumed:
+// removing it is what stops the next tick from starting the same review again,
+// and the in-progress label is what tells a human it is happening.
+func (e *Engine) claimLabels(ctx context.Context, workflowName string, number int) error {
+	inProgress := e.prof.Issue.InProgressLabel
+	if workflowName == "review" {
+		inProgress = e.prof.Issue.ReviewInProgressLabel
+		_ = e.opt.GitHub.EnsureLabel(ctx, e.opt.Repo.Slug, e.prof.Issue.ReviewLabel)
+		_ = e.opt.GitHub.RemoveLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.ReviewLabel)
+	}
+	_ = e.opt.GitHub.EnsureLabel(ctx, e.opt.Repo.Slug, inProgress)
+	if err := e.opt.GitHub.AddLabel(ctx, e.opt.Repo.Slug, number, inProgress); err != nil {
+		return fmt.Errorf("claim label: %w", err)
+	}
+	return nil
+}
+
+// finishLabels retires the in-progress label and records the outcome.
+func (e *Engine) finishLabels(ctx context.Context, workflowName string, number int) {
+	if workflowName == "review" {
+		_ = e.opt.GitHub.RemoveLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.ReviewInProgressLabel)
+		_ = e.opt.GitHub.EnsureLabel(ctx, e.opt.Repo.Slug, e.prof.Issue.ReviewDoneLabel)
+		_ = e.opt.GitHub.AddLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.ReviewDoneLabel)
+		return
+	}
+	_ = e.opt.GitHub.RemoveLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.InProgressLabel)
+	_ = e.opt.GitHub.EnsureLabel(ctx, e.opt.Repo.Slug, e.prof.Issue.DoneLabel)
+	_ = e.opt.GitHub.AddLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.DoneLabel)
+}
+
+// blockedLabels records a failure without leaving the in-progress label behind.
+func (e *Engine) blockedLabels(ctx context.Context, workflowName string, number int) {
+	if workflowName == "review" {
+		_ = e.opt.GitHub.RemoveLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.ReviewInProgressLabel)
+		_ = e.opt.GitHub.EnsureLabel(ctx, e.opt.Repo.Slug, e.prof.Issue.ReviewBlockedLabel)
+		_ = e.opt.GitHub.AddLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.ReviewBlockedLabel)
+		return
+	}
+	_ = e.opt.GitHub.RemoveLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.InProgressLabel)
+	_ = e.opt.GitHub.EnsureLabel(ctx, e.opt.Repo.Slug, e.prof.Issue.BlockedLabel)
+	_ = e.opt.GitHub.AddLabel(ctx, e.opt.Repo.Slug, number, e.prof.Issue.BlockedLabel)
+}
+
 // preserveWork keeps partially finished work by committing it on the branch, so a
 // blocked run leaves something to continue from instead of a dirty tree.
 func (e *Engine) preserveWork(ctx context.Context, dir string, perms workflow.Perms) {
@@ -933,9 +978,7 @@ func (e *Engine) blockedWithDetail(res Result, perms workflow.Perms, detail stri
 		_ = e.opt.GitHub.Comment(context.Background(), e.opt.Repo.Slug, res.Number, body)
 	}
 	if !e.opt.DryRun && perms.Label {
-		_ = e.opt.GitHub.EnsureLabel(context.Background(), e.opt.Repo.Slug, e.prof.Issue.BlockedLabel)
-		_ = e.opt.GitHub.AddLabel(context.Background(), e.opt.Repo.Slug, res.Number, e.prof.Issue.BlockedLabel)
-		_ = e.opt.GitHub.RemoveLabel(context.Background(), e.opt.Repo.Slug, res.Number, e.prof.Issue.InProgressLabel)
+		e.blockedLabels(context.Background(), res.Workflow, res.Number)
 		// The storm brake: an unassigned bot is not picked up again by accident.
 		_ = e.opt.GitHub.Unassign(context.Background(), e.opt.Repo.Slug, res.Number, e.opt.Repo.Bot)
 	}

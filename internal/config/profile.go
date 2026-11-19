@@ -44,8 +44,15 @@ type IssueSettings struct {
 	InProgressLabel string `yaml:"in_progress_label"`
 	BlockedLabel    string `yaml:"blocked_label"`
 	DoneLabel       string `yaml:"done_label"`
-	// ReviewLabel starts the review workflow when added to a pull request.
-	ReviewLabel string `yaml:"review_label"`
+	// Review lifecycle labels. The trigger label is the only state the runner
+	// reads: adding it asks for a review, and the runner swaps it for the
+	// in-progress label, then the done (or blocked) label. That makes the PR's
+	// labels the state machine, so "review this again" is just re-adding the
+	// trigger.
+	ReviewLabel           string `yaml:"review_label"`
+	ReviewInProgressLabel string `yaml:"review_in_progress_label"`
+	ReviewDoneLabel       string `yaml:"review_done_label"`
+	ReviewBlockedLabel    string `yaml:"review_blocked_label"`
 }
 
 // Check is one verification rule: when the paths match, run the commands.
@@ -198,8 +205,11 @@ func (p *Profile) Validate() error {
 // Defaults returns the profile used when a repo declares nothing.
 func Defaults() *Profile {
 	return &Profile{
-		Version:      SupportedProfileMajor,
-		Issue:        IssueSettings{Pickup: DefaultPickupMode, ForceLabel: DefaultForceLabel, InProgressLabel: DefaultInProgress, BlockedLabel: DefaultBlocked, DoneLabel: DefaultDone, ReviewLabel: DefaultReviewLabel},
+		Version: SupportedProfileMajor,
+		Issue: IssueSettings{Pickup: DefaultPickupMode, ForceLabel: DefaultForceLabel,
+			InProgressLabel: DefaultInProgress, BlockedLabel: DefaultBlocked, DoneLabel: DefaultDone,
+			ReviewLabel: DefaultReviewLabel, ReviewInProgressLabel: DefaultReviewInProgressLabel,
+			ReviewDoneLabel: DefaultReviewDoneLabel, ReviewBlockedLabel: DefaultReviewBlockedLabel},
 		BranchPrefix: DefaultBranchPrefix,
 		BaseBranch:   DefaultBaseBranch,
 		Protect:      Protect{SecretPaths: []string{".env", ".env.*"}},
@@ -235,6 +245,15 @@ func (p *Profile) applyDefaults() {
 	}
 	if p.Issue.ReviewLabel == "" {
 		p.Issue.ReviewLabel = DefaultReviewLabel
+	}
+	if p.Issue.ReviewInProgressLabel == "" {
+		p.Issue.ReviewInProgressLabel = DefaultReviewInProgressLabel
+	}
+	if p.Issue.ReviewDoneLabel == "" {
+		p.Issue.ReviewDoneLabel = DefaultReviewDoneLabel
+	}
+	if p.Issue.ReviewBlockedLabel == "" {
+		p.Issue.ReviewBlockedLabel = DefaultReviewBlockedLabel
 	}
 	if p.BranchPrefix == "" {
 		p.BranchPrefix = d.BranchPrefix
