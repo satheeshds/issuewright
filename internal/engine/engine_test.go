@@ -906,3 +906,105 @@ func TestReviewTriggersEvenIfTheClientOmitsLabels(t *testing.T) {
 		t.Errorf("no review posted: %v", h.gh.Calls)
 	}
 }
+
+// Review comments land on the lines they name, not in one summary — and a finding
+// that cannot be placed still reaches the human, in the body.
+func TestReviewPostsInlineComments(t *testing.T) {
+	h := newHarness(t)
+	h.gh.PRs = []github.PR{{
+		Number: 13, Title: "work", HeadRef: "agent/issue-13", BaseRef: "main",
+		HeadRefOID: "sha13", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-13")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-13", dir, "origin/main")
+	// README.md already exists on main: only the line we change is commentable.
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("changed line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "docs: change the readme")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-13")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/13/head", sha)
+	h.gh.PRs[0].HeadRefOID = sha
+
+	review := `---
+title: one-line readme change
+findings:
+  - severity: blocking
+    path: README.md
+    line: 1
+    message: this loses the greeting
+  - severity: non-blocking
+    path: README.md
+    line: 99
+    message: a line that is not in the diff
+  - severity: question
+    path: untouched.go
+    line: 3
+    message: about a file this PR does not touch
+---
+## Summary
+Small, but the greeting matters.
+`
+	e, logs := h.engine(t, &stubDriver{file: prompts.ReviewFile, content: review})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+
+	inline := h.gh.InlineComments[13]
+	if len(inline) != 2 {
+		t.Fatalf("inline comments = %+v", inline)
+	}
+	if inline[0].Path != "README.md" || inline[0].Line != 1 {
+		t.Errorf("first inline comment = %+v", inline[0])
+	}
+	if !strings.Contains(inline[0].Body, "[blocking]") || !strings.Contains(inline[0].Body, "loses the greeting") {
+		t.Errorf("inline body = %q", inline[0].Body)
+	}
+	// Line 99 is in the diff's file but not on a changed line: file-level comment.
+	if inline[1].Path != "README.md" || inline[1].Line != 0 {
+		t.Errorf("off-diff line should attach to the file: %+v", inline[1])
+	}
+
+	body := strings.Join(h.gh.Reviews[13], "\n")
+	if !strings.Contains(body, "1 blocking, 1 non-blocking, 1 question") {
+		t.Errorf("body should lead with the counts:\n%s", body)
+	}
+	if !strings.Contains(body, "untouched.go") || !strings.Contains(body, "does not touch") {
+		t.Errorf("a finding for an untouched file must reach the body:\n%s", body)
+	}
+	if !strings.Contains(body, "Small, but the greeting matters.") {
+		t.Errorf("the prose body was lost:\n%s", body)
+	}
+}
+
+// A reviewer that ignores the format must still produce a review.
+func TestReviewWithoutFrontMatterStillPosts(t *testing.T) {
+	h := newHarness(t)
+	h.gh.PRs = []github.PR{{
+		Number: 14, Title: "work", HeadRef: "agent/issue-14", BaseRef: "main",
+		HeadRefOID: "sha14", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-14")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-14", dir, "origin/main")
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "feat: x")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-14")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/14/head", sha)
+	h.gh.PRs[0].HeadRefOID = sha
+
+	e, logs := h.engine(t, &stubDriver{file: prompts.ReviewFile,
+		content: "## Summary\nplain markdown review\n"})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if len(h.gh.Reviews[14]) != 1 {
+		t.Fatalf("review not posted: %v", h.gh.Calls)
+	}
+	if len(h.gh.InlineComments[14]) != 0 {
+		t.Errorf("prose review should not invent inline comments: %+v", h.gh.InlineComments[14])
+	}
+}

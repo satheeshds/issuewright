@@ -56,6 +56,7 @@ type Client interface {
 	CreateDraftPR(ctx context.Context, slug, head, base, title, body string) (PR, error)
 	UpdatePRBody(ctx context.Context, slug string, number int, body string) error
 	ReviewPR(ctx context.Context, slug string, number int, body string) error
+	CreateReview(ctx context.Context, slug string, number int, body string, comments []ReviewComment) error
 
 	Comment(ctx context.Context, slug string, number int, body string) error
 	AddLabel(ctx context.Context, slug string, number int, label string) error
@@ -304,6 +305,68 @@ func (c *CLI) ReviewPR(ctx context.Context, slug string, number int, body string
 	_, err := c.gh(ctx, "pr", "review", strconv.Itoa(number), "--repo", slug,
 		"--comment", "--body", body)
 	return err
+}
+
+// ReviewComment is one inline comment in a review submission.
+type ReviewComment struct {
+	Path string
+	// Line is the line in the new file. When zero, the comment is attached to the
+	// file as a whole, which GitHub allows and which keeps a finding that is not
+	// on a changed line instead of losing it.
+	Line int
+	Body string
+}
+
+// CreateReview posts one review with inline comments. `gh pr review` cannot do
+// inline comments, so this goes through the REST API.
+func (c *CLI) CreateReview(ctx context.Context, slug string, number int, body string, comments []ReviewComment) error {
+	payload := map[string]any{"event": "COMMENT"}
+	if strings.TrimSpace(body) != "" {
+		payload["body"] = body
+	}
+	if len(comments) > 0 {
+		list := make([]map[string]any, 0, len(comments))
+		for _, cm := range comments {
+			m := map[string]any{"path": cm.Path, "body": cm.Body}
+			if cm.Line > 0 {
+				m["line"] = cm.Line
+				m["side"] = "RIGHT"
+			} else {
+				m["subject_type"] = "file"
+			}
+			list = append(list, m)
+		}
+		payload["comments"] = list
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = c.ghWithInput(ctx, raw, "api", "-X", "POST",
+		fmt.Sprintf("repos/%s/pulls/%d/reviews", slug, number), "--input", "-")
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ghWithInput runs gh with JSON on stdin (--input -), which the review endpoint
+// needs for its nested comments array.
+func (c *CLI) ghWithInput(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, c.GhBin, args...)
+	cmd.Env = c.env()
+	cmd.Stdin = bytes.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return stdout.Bytes(), fmt.Errorf("gh %s: %s", strings.Join(args, " "), msg)
+	}
+	return stdout.Bytes(), nil
 }
 
 func (c *CLI) Comment(ctx context.Context, slug string, number int, body string) error {

@@ -343,6 +343,57 @@ func (m *Manager) ChangedFiles(ctx context.Context, dir string) ([]string, error
 	return files, nil
 }
 
+// LineRange is an inclusive range of new-side line numbers in a file's diff.
+type LineRange struct {
+	Start int
+	End   int
+}
+
+// DiffHunks maps file → the new-side line ranges the diff actually touches.
+// Inline review comments are only accepted on those lines; anything else has to
+// be posted as a file-level comment instead of failing the whole review.
+func (m *Manager) DiffHunks(ctx context.Context, dir string) (map[string][]LineRange, error) {
+	out, err := m.git(ctx, dir, "diff", "--unified=0", "--no-color", "origin/"+m.opt.BaseBranch+"...HEAD")
+	if err != nil {
+		return nil, err
+	}
+	hunks := map[string][]LineRange{}
+	file := ""
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++ b/"):
+			file = strings.TrimPrefix(line, "+++ b/")
+			if file == "/dev/null" {
+				file = ""
+			}
+		case strings.HasPrefix(line, "@@ ") && file != "":
+			// @@ -a,b +c,d @@
+			plus := ""
+			for _, field := range strings.Fields(line) {
+				if strings.HasPrefix(field, "+") {
+					plus = strings.TrimPrefix(field, "+")
+					break
+				}
+			}
+			if plus == "" {
+				continue
+			}
+			start, count := 1, 1
+			if i := strings.IndexByte(plus, ','); i >= 0 {
+				start, _ = strconv.Atoi(plus[:i])
+				count, _ = strconv.Atoi(plus[i+1:])
+			} else {
+				start, _ = strconv.Atoi(plus)
+			}
+			if count == 0 {
+				count = 1 // pure deletion: anchor the comment on the line after it
+			}
+			hunks[file] = append(hunks[file], LineRange{Start: start, End: start + count - 1})
+		}
+	}
+	return hunks, nil
+}
+
 // CommitSummary is the "cold start" context for a brain that cannot resume: what
 // already happened on this branch.
 func (m *Manager) CommitSummary(ctx context.Context, dir string, max int) (string, error) {

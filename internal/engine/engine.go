@@ -15,6 +15,7 @@ import (
 	"github.com/satheeshds/issuewright/internal/brain"
 	"github.com/satheeshds/issuewright/internal/checks"
 	"github.com/satheeshds/issuewright/internal/config"
+	"github.com/satheeshds/issuewright/internal/findings"
 	"github.com/satheeshds/issuewright/internal/github"
 	"github.com/satheeshds/issuewright/internal/state"
 	"github.com/satheeshds/issuewright/internal/workflow"
@@ -565,13 +566,8 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		if perms.Write {
 			return fail("a review workflow must not claim Write")
 		}
-		body := reviewBody
-		if body == "" {
-			body = runRes.Summary
-		}
-		body = e.withChecks(body, checkResults)
-		if err := e.opt.GitHub.ReviewPR(ctx, e.opt.Repo.Slug, res.Number, body); err != nil {
-			return fail(fmt.Sprintf("post review: %v", err))
+		if err := e.postReview(ctx, res.Number, reviewBody, runRes.Summary, workdir, checkResults); err != nil {
+			return fail(err.Error())
 		}
 		detail = "review posted"
 		if pr.HeadRefOID != "" {
@@ -702,6 +698,109 @@ func (e *Engine) withChecks(body string, results []checks.Result) string {
 		return body
 	}
 	return body + "\n\n---\n\n**Read-only checks run by issuewright:**\n\n" + checks.Summary(results)
+}
+
+// postReview turns the reviewer's output into a review with inline comments on
+// the lines it names, falling back to a single body for anything unstructured.
+func (e *Engine) postReview(ctx context.Context, number int, raw, fallback, workdir string, results []checks.Result) error {
+	text := raw
+	if strings.TrimSpace(text) == "" {
+		text = fallback
+	}
+
+	rev, err := findings.Parse(text)
+	if err != nil {
+		// A malformed front matter must not lose the review: post it verbatim.
+		e.logf("warning: %v — posting the review without inline comments", err)
+		body := e.withChecks(text, results)
+		if err := e.opt.GitHub.ReviewPR(ctx, e.opt.Repo.Slug, number, body); err != nil {
+			return fmt.Errorf("post review: %w", err)
+		}
+		return nil
+	}
+
+	comments, unplaced := e.placeFindings(ctx, workdir, rev.Findings)
+	body := rev.Body
+	if len(rev.Findings) > 0 {
+		body = fmt.Sprintf("**%s**%s\n\n%s", findings.SummaryLine(rev.Findings), titleSuffix(rev.Title), body)
+	}
+	if len(unplaced) > 0 {
+		var b strings.Builder
+		b.WriteString(body)
+		b.WriteString("\n\n---\n\n### Findings that are not on a changed line\n")
+		for _, f := range unplaced {
+			fmt.Fprintf(&b, "\n- **%s** `%s`%s — %s\n", f.Severity, f.Path, lineSuffix(f.Line), f.Message)
+		}
+		body = b.String()
+	}
+	body = e.withChecks(body, results)
+
+	if err := e.opt.GitHub.CreateReview(ctx, e.opt.Repo.Slug, number, body, comments); err != nil {
+		return fmt.Errorf("post review: %w", err)
+	}
+	e.logf("review posted: %d inline comment(s), %d in the body", len(comments), len(unplaced))
+	return nil
+}
+
+// placeFindings decides which findings can be attached to a line. GitHub rejects
+// a review whose comment is not on a changed line, so a finding that is merely
+// adjacent is attached to its file, and one for a file the PR does not touch goes
+// into the body. Nothing is silently dropped.
+func (e *Engine) placeFindings(ctx context.Context, workdir string, fs []findings.Finding) ([]github.ReviewComment, []findings.Finding) {
+	hunks, err := e.wts.DiffHunks(ctx, workdir)
+	if err != nil {
+		e.logf("warning: could not read the diff (%v); posting findings in the body", err)
+		return nil, fs
+	}
+	const maxInline = 25
+	var inline []github.ReviewComment
+	var rest []findings.Finding
+	for _, f := range fs {
+		ranges, ok := hunks[f.Path]
+		if !ok {
+			rest = append(rest, f)
+			continue
+		}
+		if f.Line <= 0 || !inRanges(ranges, f.Line) {
+			// The file is in the diff but the line is not: attach to the file.
+			if len(inline) < maxInline {
+				inline = append(inline, github.ReviewComment{Path: f.Path, Body: f.CommentBody()})
+				continue
+			}
+			f.Line = 0
+			rest = append(rest, f)
+			continue
+		}
+		if len(inline) >= maxInline {
+			rest = append(rest, f)
+			continue
+		}
+		inline = append(inline, github.ReviewComment{Path: f.Path, Line: f.Line, Body: f.CommentBody()})
+	}
+	return inline, rest
+}
+
+func inRanges(ranges []worktree.LineRange, line int) bool {
+	for _, r := range ranges {
+		if line >= r.Start && line <= r.End {
+			return true
+		}
+	}
+	return false
+}
+
+func lineSuffix(line int) string {
+	if line <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(":%d", line)
+}
+
+func titleSuffix(title string) string {
+	if strings.TrimSpace(title) == "" {
+		return ""
+	}
+	return " — " + title
 }
 
 func (e *Engine) rulesFor(name string) (string, error) {

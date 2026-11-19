@@ -16,11 +16,12 @@ type Fake struct {
 	// Calls records "op target detail" lines in order.
 	Calls []string
 
-	Labels    map[int][]string
-	Comments  map[int][]string
-	Reviews   map[int][]string
-	Assignees map[int][]string
-	Pushed    []string
+	Labels         map[int][]string
+	Comments       map[int][]string
+	Reviews        map[int][]string
+	InlineComments map[int][]ReviewComment
+	Assignees      map[int][]string
+	Pushed         []string
 
 	// FailOn makes the named operation return an error.
 	FailOn string
@@ -28,10 +29,11 @@ type Fake struct {
 
 func NewFake() *Fake {
 	return &Fake{
-		Labels:    map[int][]string{},
-		Comments:  map[int][]string{},
-		Reviews:   map[int][]string{},
-		Assignees: map[int][]string{},
+		Labels:         map[int][]string{},
+		Comments:       map[int][]string{},
+		Reviews:        map[int][]string{},
+		InlineComments: map[int][]ReviewComment{},
+		Assignees:      map[int][]string{},
 	}
 }
 
@@ -163,6 +165,15 @@ func (f *Fake) UpdatePRBody(_ context.Context, _ string, number int, body string
 			f.PRs[i].Body = body
 		}
 	}
+	return nil
+}
+
+func (f *Fake) CreateReview(_ context.Context, _ string, number int, body string, comments []ReviewComment) error {
+	if err := f.record("review-inline %d %d-comments", number, len(comments)); err != nil {
+		return err
+	}
+	f.Reviews[number] = append(f.Reviews[number], body)
+	f.InlineComments[number] = append(f.InlineComments[number], comments...)
 	return nil
 }
 

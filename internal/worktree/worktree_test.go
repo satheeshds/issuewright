@@ -450,3 +450,56 @@ func TestFetchErrorWithoutTokenExplainsItself(t *testing.T) {
 		t.Errorf("error should explain the missing token: %v", err)
 	}
 }
+
+// Inline review comments are only accepted on lines the diff shows, so the hunks
+// have to be known: this parses `git diff -U0` into new-side line ranges.
+func TestDiffHunks(t *testing.T) {
+	m, _ := newManager(t)
+	ctx := context.Background()
+	if err := m.EnsureClone(ctx, "acme/demo"); err != nil {
+		t.Fatal(err)
+	}
+	path, _, _, err := m.EnsureIssue(ctx, 21)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// README.md exists on main with one line; only line 1 can be commented on.
+	edited := "hello, changed\n"
+	if err := os.WriteFile(filepath.Join(path, "README.md"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A brand-new file: every one of its lines is part of the diff.
+	if err := os.WriteFile(filepath.Join(path, "new.go"), []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := m.CommitAll(ctx, path, "feat: change readme, add file"); err != nil || !ok {
+		t.Fatal(err)
+	}
+
+	hunks, err := m.DiffHunks(ctx, path)
+	if err != nil {
+		t.Fatalf("DiffHunks: %v", err)
+	}
+	has := func(file string, line int) bool {
+		for _, r := range hunks[file] {
+			if line >= r.Start && line <= r.End {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("README.md", 1) {
+		t.Errorf("the changed line is not commentable: %v", hunks["README.md"])
+	}
+	if has("README.md", 2) {
+		t.Errorf("a line that is not in the diff must not be commentable: %v", hunks["README.md"])
+	}
+	for _, line := range []int{1, 2, 3} {
+		if !has("new.go", line) {
+			t.Errorf("new file line %d should be commentable: %v", line, hunks["new.go"])
+		}
+	}
+	if _, ok := hunks["untouched.txt"]; ok {
+		t.Error("unchanged files must not appear in the hunks")
+	}
+}

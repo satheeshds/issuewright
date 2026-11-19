@@ -235,6 +235,37 @@ That is how a profile edit on the base branch reaches the runner. A clone with
 local changes is left alone and the run is refused loudly, because silently
 resetting it would delete someone's work.
 
+### Inline review comments
+
+The reviewer writes `REVIEW.md` as YAML front matter plus prose:
+
+```yaml
+---
+title: adds telemetry
+findings:
+  - severity: blocking          # blocking | non-blocking | question
+    path: lib/telemetry.dart    # repo-relative, as it appears in the diff
+    line: 30                    # line in the new file
+    message: route arguments leak customer coordinates
+    suggestion: |               # optional exact replacement
+      Telemetry.routeObserver(redact: true)
+---
+## Summary
+...
+```
+
+Each finding becomes a comment on that line (posted through the reviews API —
+`gh pr review` cannot do inline comments). The diff is read locally first, so the
+runner knows which lines are commentable:
+
+- line inside a diff hunk → **inline** comment on that line
+- file in the diff, line not in a hunk → comment attached to the **file**
+- file not in the diff → listed in the review **body**
+- no front matter at all → one body comment, as before
+
+Nothing is dropped, and a malformed front matter is reported and posted verbatim
+instead of failing the review.
+
 ### Triggering a review
 
 Three ways, in order of how well they work:
