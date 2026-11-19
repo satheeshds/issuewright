@@ -235,6 +235,20 @@ That is how a profile edit on the base branch reaches the runner. A clone with
 local changes is left alone and the run is refused loudly, because silently
 resetting it would delete someone's work.
 
+### Triggering a review
+
+Three ways, in order of how well they work:
+
+| Trigger | Notes |
+| --- | --- |
+| **`review:go` label** on the PR | works everywhere, including repos where GitHub refuses to request review from a bot (`Could not resolve user with login …`) |
+| PR opened with the bot as **requested reviewer** | only where the bot is a resolveable reviewer; requires the App to see the repo |
+| `issuewright run --pr N --workflow review` | manual, any time |
+
+A review runs **per revision**: the head commit is recorded, so the same commit is
+not reviewed twice while the label stays on the PR, and a new push is reviewed
+again. There is a test for exactly that (`TestReviewSkipsTheSameRevisionAndRepeatsOnNewOnes`).
+
 ### Per-issue overrides by label
 
 ```

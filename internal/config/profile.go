@@ -44,6 +44,8 @@ type IssueSettings struct {
 	InProgressLabel string `yaml:"in_progress_label"`
 	BlockedLabel    string `yaml:"blocked_label"`
 	DoneLabel       string `yaml:"done_label"`
+	// ReviewLabel starts the review workflow when added to a pull request.
+	ReviewLabel string `yaml:"review_label"`
 }
 
 // Check is one verification rule: when the paths match, run the commands.
@@ -193,7 +195,7 @@ func (p *Profile) Validate() error {
 func Defaults() *Profile {
 	return &Profile{
 		Version:      SupportedProfileMajor,
-		Issue:        IssueSettings{Pickup: DefaultPickupMode, ForceLabel: DefaultForceLabel, InProgressLabel: DefaultInProgress, BlockedLabel: DefaultBlocked, DoneLabel: DefaultDone},
+		Issue:        IssueSettings{Pickup: DefaultPickupMode, ForceLabel: DefaultForceLabel, InProgressLabel: DefaultInProgress, BlockedLabel: DefaultBlocked, DoneLabel: DefaultDone, ReviewLabel: DefaultReviewLabel},
 		BranchPrefix: DefaultBranchPrefix,
 		BaseBranch:   DefaultBaseBranch,
 		Protect:      Protect{SecretPaths: []string{".env", ".env.*"}},
@@ -226,6 +228,9 @@ func (p *Profile) applyDefaults() {
 	}
 	if p.Issue.DoneLabel == "" {
 		p.Issue.DoneLabel = d.Issue.DoneLabel
+	}
+	if p.Issue.ReviewLabel == "" {
+		p.Issue.ReviewLabel = DefaultReviewLabel
 	}
 	if p.BranchPrefix == "" {
 		p.BranchPrefix = d.BranchPrefix

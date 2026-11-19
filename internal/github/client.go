@@ -33,6 +33,7 @@ type PR struct {
 	Body       string   `json:"body"`
 	URL        string   `json:"url"`
 	HeadRef    string   `json:"headRefName"`
+	HeadRefOID string   `json:"headRefOid"`
 	BaseRef    string   `json:"baseRefName"`
 	Draft      bool     `json:"isDraft"`
 	State      string   `json:"state"`
@@ -48,6 +49,7 @@ type Client interface {
 	ListIssuesWithLabel(ctx context.Context, slug, label string) ([]Issue, error)
 	GetIssue(ctx context.Context, slug string, number int) (Issue, error)
 	ListReviewRequestedPRs(ctx context.Context, slug, login string) ([]PR, error)
+	ListPRsWithLabel(ctx context.Context, slug, label string) ([]PR, error)
 	GetPR(ctx context.Context, slug string, number int) (PR, error)
 	FindPRByHead(ctx context.Context, slug, head string) (PR, bool, error)
 
@@ -190,6 +192,7 @@ type prJSON struct {
 	Body        string `json:"body"`
 	URL         string `json:"url"`
 	HeadRefName string `json:"headRefName"`
+	HeadRefOID  string `json:"headRefOid"`
 	BaseRefName string `json:"baseRefName"`
 	IsDraft     bool   `json:"isDraft"`
 	State       string `json:"state"`
@@ -197,14 +200,34 @@ type prJSON struct {
 
 func (p prJSON) toPR() PR {
 	return PR{Number: p.Number, Title: p.Title, Body: p.Body, URL: p.URL,
-		HeadRef: p.HeadRefName, BaseRef: p.BaseRefName, Draft: p.IsDraft, State: p.State}
+		HeadRef: p.HeadRefName, HeadRefOID: p.HeadRefOID, BaseRef: p.BaseRefName,
+		Draft: p.IsDraft, State: p.State}
 }
 
-const prFields = "number,title,body,url,headRefName,baseRefName,isDraft,state"
+const prFields = "number,title,body,url,headRefName,headRefOid,baseRefName,isDraft,state"
 
 func (c *CLI) ListReviewRequestedPRs(ctx context.Context, slug, login string) ([]PR, error) {
 	out, err := c.gh(ctx, "pr", "list", "--repo", slug, "--state", "open",
 		"--search", "review-requested:"+login, "--limit", "50", "--json", prFields)
+	if err != nil {
+		return nil, err
+	}
+	var raw []prJSON
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse pr list: %w", err)
+	}
+	prs := make([]PR, 0, len(raw))
+	for _, r := range raw {
+		prs = append(prs, r.toPR())
+	}
+	return prs, nil
+}
+
+// ListPRsWithLabel finds pull requests by label, the trigger that works where a
+// bot cannot be requested as a reviewer.
+func (c *CLI) ListPRsWithLabel(ctx context.Context, slug, label string) ([]PR, error) {
+	out, err := c.gh(ctx, "pr", "list", "--repo", slug, "--state", "open",
+		"--label", label, "--limit", "50", "--json", prFields)
 	if err != nil {
 		return nil, err
 	}

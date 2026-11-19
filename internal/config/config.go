@@ -32,6 +32,7 @@ const (
 	DefaultDone           = "agent:done"
 	DefaultForceLabel     = "agent:go"
 	DefaultPickupMode     = "assignee"
+	DefaultReviewLabel    = "review:go"
 	SupportedProfileMajor = 1
 )
 

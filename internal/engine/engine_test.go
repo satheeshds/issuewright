@@ -340,8 +340,13 @@ func TestDryRunChangesNothing(t *testing.T) {
 	if len(results) != 1 || results[0].State != StatePlanned {
 		t.Fatalf("results = %+v", results)
 	}
-	if len(h.gh.Calls) != 2 { // only the two discovery calls
-		t.Errorf("dry run wrote to GitHub: %v", h.gh.Calls)
+	// Only discovery: no labels, comments, pushes or PRs.
+	for _, call := range h.gh.Calls {
+		for _, write := range []string{"add-label", "remove-label", "comment", "push", "create-pr", "ensure-label", "review "} {
+			if strings.HasPrefix(call, write) {
+				t.Errorf("dry run wrote to GitHub: %v", h.gh.Calls)
+			}
+		}
 	}
 	if len(h.gh.Pushed) != 0 || len(h.gh.PRs) != 0 {
 		t.Error("dry run published something")
@@ -635,7 +640,7 @@ func TestLabelPickupWorksWithoutAnAssignee(t *testing.T) {
 	if len(results) != 1 || results[0].Number != 90 || results[0].State != StateDone {
 		t.Fatalf("results = %+v\n%s", results, logs)
 	}
-	if len(h.gh.CallsMatching("list-labeled")) != 1 {
+	if len(h.gh.CallsMatching("list-labeled acme/demo agent:go")) != 1 {
 		t.Errorf("label pickup should query by label: %v", h.gh.Calls)
 	}
 	if len(h.gh.CallsMatching("list-assigned")) != 0 {
@@ -739,5 +744,89 @@ func TestUnknownBrainLabelIsIgnored(t *testing.T) {
 	}
 	if len(h.gh.PRs) != 1 {
 		t.Error("the run should still have published")
+	}
+}
+
+// On a repo where GitHub refuses to request review from the App bot ("Could not
+// resolve user with login"), the label is the only automatable trigger.
+func TestReviewStartsFromALabelOnThePR(t *testing.T) {
+	h := newHarness(t)
+	h.gh.PRs = []github.PR{{
+		Number: 8, Title: "some work", HeadRef: "agent/issue-8", BaseRef: "main",
+		HeadRefOID: "sha1111", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-8")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-8", dir, "origin/main")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "feat: work")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-8")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/8/head", sha)
+
+	e, logs := h.engine(t, &stubDriver{file: prompts.ReviewFile, content: "## Summary\nfine\n"})
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if len(results) != 1 || results[0].Workflow != "review" || results[0].State != StateDone {
+		t.Fatalf("results = %+v\n%s", results, logs)
+	}
+	if len(h.gh.Reviews[8]) != 1 {
+		t.Errorf("no review posted: %v", h.gh.Calls)
+	}
+	if len(h.gh.Pushed) != 0 {
+		t.Errorf("a reviewer pushed: %v", h.gh.Pushed)
+	}
+}
+
+// The label stays on the PR, so the next tick must not review the same commit
+// again — and a new commit must be reviewed.
+func TestReviewSkipsTheSameRevisionAndRepeatsOnNewOnes(t *testing.T) {
+	h := newHarness(t)
+	h.gh.PRs = []github.PR{{
+		Number: 9, Title: "work", HeadRef: "agent/issue-9", BaseRef: "main",
+		HeadRefOID: "sha2222", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-9")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-9", dir, "origin/main")
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "feat: work")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-9")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/9/head", sha)
+	h.gh.PRs[0].HeadRefOID = sha
+
+	drv := &stubDriver{file: prompts.ReviewFile, content: "## Summary\nfine\n"}
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("first Tick: %v\n%s", err, logs)
+	}
+	if len(h.gh.Reviews[9]) != 1 {
+		t.Fatalf("first review missing: %v", h.gh.Calls)
+	}
+
+	// Same head commit, another tick.
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("second Tick: %v", err)
+	}
+	if len(h.gh.Reviews[9]) != 1 {
+		t.Errorf("the same revision was reviewed twice: %v", h.gh.Calls)
+	}
+	if len(results) != 1 || results[0].State != StateSkipped {
+		t.Errorf("results = %+v", results)
+	}
+
+	// A new commit on the PR must be reviewed.
+	h.gh.PRs[0].HeadRefOID = "sha3333"
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("third Tick: %v", err)
+	}
+	if len(h.gh.Reviews[9]) != 2 {
+		t.Errorf("a new revision was not reviewed: %v", h.gh.Calls)
 	}
 }

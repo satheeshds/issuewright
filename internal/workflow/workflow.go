@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/satheeshds/issuewright/internal/brain"
@@ -21,9 +22,13 @@ type Kind string
 
 // The events issuewright polls for.
 const (
-	IssueAssigned  Kind = "issue_assigned"
-	IssueLabel     Kind = "issue_label"
-	PROpened       Kind = "pr_opened"
+	IssueAssigned Kind = "issue_assigned"
+	IssueLabel    Kind = "issue_label"
+	PROpened      Kind = "pr_opened"
+	// PRLabel starts work from a label on the pull request. On repos where
+	// GitHub refuses to assign or request review from the App bot, this is the
+	// only trigger that can be automated.
+	PRLabel        Kind = "pr_label"
 	CommentMention Kind = "comment_mention"
 )
 
@@ -150,6 +155,13 @@ func Unregister(name string) {
 	delete(registry, name)
 }
 
+// LabelDefaults supply the label a trigger means when it declares none: the
+// profile chooses the names, the workflow only says "a label starts me".
+type LabelDefaults struct {
+	Issue string
+	PR    string
+}
+
 // Event is a discovered thing that might start work.
 type Event struct {
 	Kind   Kind
@@ -158,24 +170,30 @@ type Event struct {
 	Labels []string
 }
 
-// Accepts reports whether a workflow wants this event. forceLabel is the
-// profile's label for unlabelled IssueLabel triggers.
-func Accepts(w Workflow, ev Event, forceLabel string) bool {
+// Accepts reports whether a workflow wants this event. A trigger that names no
+// label takes the profile's default for that kind.
+func Accepts(w Workflow, ev Event, defaults LabelDefaults) bool {
 	for _, t := range w.Triggers() {
 		if t.Kind != ev.Kind {
 			continue
 		}
-		if ev.Kind != IssueLabel {
-			return true
-		}
-		want := t.Label
-		if want == "" {
-			want = forceLabel
-		}
-		for _, l := range ev.Labels {
-			if l == want {
-				return true
+		switch ev.Kind {
+		case IssueLabel, PRLabel:
+			want := t.Label
+			if want == "" {
+				if ev.Kind == PRLabel {
+					want = defaults.PR
+				} else {
+					want = defaults.Issue
+				}
 			}
+			for _, l := range ev.Labels {
+				if strings.EqualFold(l, want) {
+					return true
+				}
+			}
+		default:
+			return true
 		}
 	}
 	return false
@@ -189,7 +207,7 @@ type Selection struct {
 
 // Plan pairs events with enabled workflows. Read-only work is scheduled before
 // writing work so a short review is not stuck behind a long implement run.
-func Plan(events []Event, enabled func(Workflow) bool, forceLabel string) []Selection {
+func Plan(events []Event, enabled func(Workflow) bool, defaults LabelDefaults) []Selection {
 	sorted := make([]Event, len(events))
 	copy(sorted, events)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -211,7 +229,7 @@ func Plan(events []Event, enabled func(Workflow) bool, forceLabel string) []Sele
 			if enabled != nil && !enabled(w) {
 				continue
 			}
-			if !Accepts(w, ev, forceLabel) {
+			if !Accepts(w, ev, defaults) {
 				continue
 			}
 			key := fmt.Sprintf("%s#%d/%s", w.Name(), ev.Number, ev.Kind)
@@ -227,7 +245,7 @@ func Plan(events []Event, enabled func(Workflow) bool, forceLabel string) []Sele
 
 func priority(k Kind) int {
 	switch k {
-	case PROpened, CommentMention:
+	case PROpened, PRLabel, CommentMention:
 		return 0
 	case IssueAssigned, IssueLabel:
 		return 1

@@ -27,6 +27,9 @@ func (e *Engine) Name() string { return "review" }
 func (e *Engine) Triggers() []workflow.Trigger {
 	return []workflow.Trigger{
 		{Kind: workflow.PROpened},
+		// The label trigger is the one that works on repos where GitHub refuses
+		// to request review from an App bot.
+		{Kind: workflow.PRLabel},
 		{Kind: workflow.CommentMention},
 	}
 }

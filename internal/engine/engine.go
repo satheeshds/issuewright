@@ -212,12 +212,40 @@ func (e *Engine) discover(ctx context.Context) ([]workflow.Event, []github.Issue
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("list review requests: %w", err)
 	}
+	seenPR := map[int]bool{}
 	for _, pr := range prs {
+		seenPR[pr.Number] = true
 		events = append(events, workflow.Event{
 			Kind: workflow.PROpened, Number: pr.Number, Title: pr.Title, Labels: pr.Labels,
 		})
 	}
+	// A label on the PR, for repos where GitHub refuses to request review from a
+	// bot ("Could not resolve user with login …").
+	if label := e.prof.Issue.ReviewLabel; label != "" && e.prof.Workflow("review").EnabledOr(true) {
+		labelled, err := e.opt.GitHub.ListPRsWithLabel(ctx, e.opt.Repo.Slug, label)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("list prs labelled %s: %w", label, err)
+		}
+		for _, pr := range labelled {
+			if seenPR[pr.Number] {
+				continue
+			}
+			seenPR[pr.Number] = true
+			prs = append(prs, pr)
+			events = append(events, workflow.Event{
+				Kind: workflow.PRLabel, Number: pr.Number, Title: pr.Title, Labels: pr.Labels,
+			})
+		}
+	}
 	return events, issues, prs, nil
+}
+
+// labelDefaults names the label each trigger means in this repo.
+func (e *Engine) labelDefaults() workflow.LabelDefaults {
+	return workflow.LabelDefaults{
+		Issue: e.prof.Issue.ForceLabel,
+		PR:    e.prof.Issue.ReviewLabel,
+	}
 }
 
 func (e *Engine) enabled() func(workflow.Workflow) bool {
@@ -261,7 +289,7 @@ func (e *Engine) Tick(ctx context.Context) ([]Result, error) {
 	}
 
 	var results []Result
-	for _, sel := range workflow.Plan(events, e.enabled(), e.prof.Issue.ForceLabel) {
+	for _, sel := range workflow.Plan(events, e.enabled(), e.labelDefaults()) {
 		if r, ok := e.suppressed(sel); ok {
 			results = append(results, r)
 			continue
@@ -383,6 +411,18 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	spec, err := wf.Prompt(job)
 	if err != nil {
 		return e.blocked(res, perms, err)
+	}
+
+	// A review is per revision: the same head commit must not be reviewed on every
+	// tick, and a new push must be.
+	if wf.Name() == "review" && pr.HeadRefOID != "" {
+		if claim, ok, _ := e.store.LoadClaim(e.opt.Repo.Name, wf.Name(), sel.Event.Number); ok &&
+			claim.Detail == "reviewed:"+pr.HeadRefOID && claim.State == StateDone {
+			res.State = StateSkipped
+			res.Detail = "already reviewed " + pr.HeadRefOID[:7]
+			e.logf("skipping review#%d: already reviewed %s", res.Number, pr.HeadRefOID[:7])
+			return res
+		}
 	}
 
 	choice := e.choiceFor(labels)
@@ -527,6 +567,9 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 			return fail(fmt.Sprintf("post review: %v", err))
 		}
 		detail = "review posted"
+		if pr.HeadRefOID != "" {
+			detail = "reviewed:" + pr.HeadRefOID
+		}
 	default:
 		if !perms.Write {
 			return fail(wf.Name() + " cannot publish without Write permission")
@@ -818,7 +861,7 @@ func (e *Engine) Status(ctx context.Context) ([]StatusRow, error) {
 	_ = prs
 
 	var rows []StatusRow
-	for _, sel := range workflow.Plan(events, e.enabled(), e.prof.Issue.ForceLabel) {
+	for _, sel := range workflow.Plan(events, e.enabled(), e.labelDefaults()) {
 		row := StatusRow{Repo: e.opt.Repo.Name, Kind: string(sel.Event.Kind),
 			Number: sel.Event.Number, Workflow: sel.Workflow.Name(), State: "pending",
 			Detail: byIssue[sel.Event.Number].Title}

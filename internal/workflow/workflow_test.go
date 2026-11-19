@@ -69,7 +69,7 @@ func TestAccepts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Accepts(w, tc.ev, "agent:go"); got != tc.want {
+			if got := Accepts(w, tc.ev, LabelDefaults{Issue: "agent:go", PR: "review:go"}); got != tc.want {
 				t.Errorf("Accepts = %v, want %v", got, tc.want)
 			}
 		})
@@ -90,7 +90,7 @@ func TestPlanOrdersReadOnlyFirstAndSkipsDisabled(t *testing.T) {
 		{Kind: IssueAssigned, Number: 9},
 		{Kind: PROpened, Number: 4},
 	}
-	got := Plan(events, func(w Workflow) bool { return true }, "agent:go")
+	got := Plan(events, func(w Workflow) bool { return true }, LabelDefaults{Issue: "agent:go", PR: "review:go"})
 	var names []string
 	for _, s := range got {
 		names = append(names, s.Workflow.Name())
@@ -99,7 +99,7 @@ func TestPlanOrdersReadOnlyFirstAndSkipsDisabled(t *testing.T) {
 		t.Fatalf("review must be scheduled first: %v", names)
 	}
 
-	disabled := Plan(events, func(w Workflow) bool { return w.Name() != "test-impl" }, "agent:go")
+	disabled := Plan(events, func(w Workflow) bool { return w.Name() != "test-impl" }, LabelDefaults{Issue: "agent:go"})
 	for _, s := range disabled {
 		if s.Workflow.Name() == "test-impl" {
 			t.Fatal("a disabled workflow was scheduled")
@@ -116,7 +116,7 @@ func TestPlanDeduplicates(t *testing.T) {
 		{Kind: IssueAssigned, Number: 5},
 		{Kind: IssueLabel, Number: 5, Labels: []string{"agent:go"}},
 	}
-	got := Plan(events, nil, "agent:go")
+	got := Plan(events, nil, LabelDefaults{Issue: "agent:go"})
 	count := 0
 	for _, s := range got {
 		if s.Workflow.Name() == "test-dedup" {

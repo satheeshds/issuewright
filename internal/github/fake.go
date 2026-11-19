@@ -104,6 +104,21 @@ func (f *Fake) ListReviewRequestedPRs(_ context.Context, slug, login string) ([]
 	return f.PRs, nil
 }
 
+func (f *Fake) ListPRsWithLabel(_ context.Context, slug, label string) ([]PR, error) {
+	if err := f.record("list-labeled-prs %s %s", slug, label); err != nil {
+		return nil, err
+	}
+	var out []PR
+	for _, pr := range f.PRs {
+		for _, l := range pr.Labels {
+			if l == label {
+				out = append(out, pr)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (f *Fake) GetPR(_ context.Context, _ string, number int) (PR, error) {
 	if err := f.record("get-pr %d", number); err != nil {
 		return PR{}, err
