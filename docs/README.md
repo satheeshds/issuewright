@@ -278,7 +278,16 @@ Three ways, in order of how well they work:
 
 A review runs **per revision**: the head commit is recorded, so the same commit is
 not reviewed twice while the label stays on the PR, and a new push is reviewed
-again. There is a test for exactly that (`TestReviewSkipsTheSameRevisionAndRepeatsOnNewOnes`).
+again. To re-review the *same* commit — after changing the prompt, the model, or the
+review format — force it:
+
+```bash
+issuewright run --repo <repo> --pr 47 --workflow review --force
+```
+
+`--force` ignores the previous claim (a finished or blocked job, a reviewed
+revision) for that run only. Toggling the label does **not** do this: the skip is
+recorded in the claim, not in the label. There is a test for exactly that (`TestReviewSkipsTheSameRevisionAndRepeatsOnNewOnes`).
 
 ### Per-issue overrides by label
 
@@ -310,6 +319,7 @@ issuewright status --json | jq .       # same, machine-readable
 issuewright run --repo your-repo --issue 39 --dry-run --verbose
 issuewright run --repo your-repo --issue 39
 issuewright run --repo your-repo --pr 7 --workflow review
+issuewright run --repo your-repo --pr 7 --workflow review --force   # again, same commit
 ```
 
 `--dry-run` resolves everything — prompt, brain, model, branch, checks — and

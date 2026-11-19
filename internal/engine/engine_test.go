@@ -1008,3 +1008,47 @@ func TestReviewWithoutFrontMatterStillPosts(t *testing.T) {
 		t.Errorf("prose review should not invent inline comments: %+v", h.gh.InlineComments[14])
 	}
 }
+
+// There was no supported way to say "review this commit again": the once-per-
+// revision claim had to be deleted by hand. --force is that way.
+func TestForceReRunsASettledJobAndAReviewedCommit(t *testing.T) {
+	h := newHarness(t)
+	h.gh.PRs = []github.PR{{
+		Number: 15, Title: "work", HeadRef: "agent/issue-15", BaseRef: "main",
+		HeadRefOID: "sha15", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-15")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-15", dir, "origin/main")
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "feat: x")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-15")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/15/head", sha)
+	h.gh.PRs[0].HeadRefOID = sha
+
+	e, logs := h.engine(t, &stubDriver{file: prompts.ReviewFile, content: "## Summary\nfine\n"})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("first Tick: %v\n%s", err, logs)
+	}
+	if len(h.gh.Reviews[15]) != 1 {
+		t.Fatalf("first review missing: %v", h.gh.Calls)
+	}
+
+	// Same commit again: skipped.
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.gh.Reviews[15]) != 1 {
+		t.Fatalf("same revision reviewed twice: %v", h.gh.Calls)
+	}
+
+	// Forced: reviewed again, without touching state files.
+	e.SetForce(true)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.gh.Reviews[15]) != 2 {
+		t.Errorf("--force did not re-review: %v", h.gh.Calls)
+	}
+}

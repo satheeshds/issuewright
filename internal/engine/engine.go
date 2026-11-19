@@ -48,6 +48,10 @@ type Options struct {
 	Driver brain.Driver
 	// Profile overrides loading .agent/agent.yaml (tests).
 	Profile *config.Profile
+	// Force ignores previous claims: a job already marked done (or blocked), and
+	// a review of the same commit, are run again. This is the supported way to say
+	// "do it again", instead of deleting state files by hand.
+	Force bool
 }
 
 // Result is what one job did.
@@ -140,6 +144,9 @@ func New(opt Options) (*Engine, error) {
 		now: opt.Now,
 	}, nil
 }
+
+// SetForce makes the next runs ignore previous claims (see Options.Force).
+func (e *Engine) SetForce(v bool) { e.opt.Force = v }
 
 // Profile exposes the loaded profile (used by --dry-run reporting and tests).
 func (e *Engine) Profile() *config.Profile { return e.prof }
@@ -333,6 +340,9 @@ func (e *Engine) suppressed(sel workflow.Selection) (Result, bool) {
 		base.State, base.Detail = StateSkipped, "already done"
 		return base, true
 	}
+	if e.opt.Force {
+		return Result{}, false
+	}
 	claim, ok, err := e.store.LoadClaim(e.opt.Repo.Name, sel.Workflow.Name(), sel.Event.Number)
 	if err == nil && ok && claim.State == StateBlocked {
 		base.State, base.Detail = StateSkipped, "claim is blocked"
@@ -422,7 +432,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 
 	// A review is per revision: the same head commit must not be reviewed on every
 	// tick, and a new push must be.
-	if wf.Name() == "review" && pr.HeadRefOID != "" {
+	if wf.Name() == "review" && pr.HeadRefOID != "" && !e.opt.Force {
 		if claim, ok, _ := e.store.LoadClaim(e.opt.Repo.Name, wf.Name(), sel.Event.Number); ok &&
 			claim.Detail == "reviewed:"+pr.HeadRefOID && claim.State == StateDone {
 			res.State = StateSkipped

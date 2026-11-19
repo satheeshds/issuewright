@@ -198,6 +198,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	c := addCommon(fs)
 	issue := fs.Int("issue", 0, "issue number")
 	pr := fs.Int("pr", 0, "pull request number")
+	force := fs.Bool("force", false, "run again even if this job or revision is already done")
 	wf := fs.String("workflow", "", "workflow name (default: inferred from --issue/--pr)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -212,6 +213,9 @@ func cmdRun(ctx context.Context, args []string) error {
 	eng, err := c.newEngine(cfg, repo)
 	if err != nil {
 		return err
+	}
+	if *force {
+		eng.SetForce(true)
 	}
 	var res engine.Result
 	if *issue != 0 {
