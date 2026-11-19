@@ -81,11 +81,17 @@ Most specific wins:
 ```
 --brain/--model/--thinking flags
   → a label on the issue (model:…, thinking:…, brain:…) when the profile allows it
+  → .agent/agent.yaml  workflows.<name>.brain   (the reviewer can differ from the author)
   → .agent/agent.yaml  brain: {name, model, thinking}
     → [[repo]] in /srv/agent/config.toml
       → [agent] in /srv/agent/config.toml
         → driver default
 ```
+
+Both shipped workflows use the same driver and model by default — the same
+weights write the code and review it, so the same blind spots apply. Give
+`workflows.review.brain` a different model (or driver) when that matters; the PR
+body records which brain, model and thinking level actually produced each run.
 
 Brains are **chosen, never silently swapped**. A failing driver fails the run:
 `agent:blocked`, one comment, the log tail. Automatic failover would make the run

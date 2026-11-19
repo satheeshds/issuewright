@@ -257,8 +257,8 @@ thinking:low              less deliberation (cheaper) for a small task
 brain:opencode            use a different driver for this run
 ```
 
-Resolution, most specific first: **CLI flags → label → profile `brain:` → `[[repo]]`
-→ `[agent]` → driver default.** Unknown brains or thinking levels are logged and
+Resolution, most specific first: **CLI flags → label → `workflows.<name>.brain:` →
+profile `brain:` → `[[repo]]` → `[agent]` → driver default.** Unknown brains or thinking levels are logged and
 dropped; the run continues on the configured value. The PR body records which
 brain, model and thinking level actually produced the work.
 

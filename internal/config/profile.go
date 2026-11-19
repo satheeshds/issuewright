@@ -117,6 +117,10 @@ type WorkflowSettings struct {
 	Pickup  string   `yaml:"pickup"`
 	On      []string `yaml:"on"`
 	Prompt  string   `yaml:"prompt"`
+	// Brain, when set, overrides the repo's brain for this workflow only. That is
+	// how writing and reviewing stop being the same model: a reviewer sharing the
+	// author's weights shares its blind spots.
+	Brain BrainSettings `yaml:"brain"`
 }
 
 // EnabledOr reports whether the workflow is enabled, defaulting when unset.
@@ -257,6 +261,43 @@ func (p *Profile) Workflow(name string) WorkflowSettings {
 		return WorkflowSettings{}
 	}
 	return p.Workflows[name]
+}
+
+// BrainFor merges the workflow's brain block over the profile's.
+func (p *Profile) BrainFor(workflow string) BrainSettings {
+	var out BrainSettings
+	if p != nil {
+		out = p.Brain
+	}
+	w := p.Workflow(workflow)
+	if w.Brain.Name != "" {
+		out.Name = w.Brain.Name
+	}
+	if w.Brain.Model != "" {
+		out.Model = w.Brain.Model
+	}
+	if w.Brain.Thinking != "" {
+		out.Thinking = w.Brain.Thinking
+	}
+	return out
+}
+
+// ResolveBrainFor applies the full precedence for one workflow: flags → label →
+// workflows.<name>.brain → brain → [[repo]] → [agent] → driver default.
+func ResolveBrainFor(agent AgentConfig, repo Repo, prof *Profile, workflow string, ov Overrides) BrainChoice {
+	b := BrainSettings{}
+	if prof != nil {
+		if workflow != "" {
+			b = prof.BrainFor(workflow)
+		} else {
+			b = prof.Brain
+		}
+	}
+	return BrainChoice{
+		Name:     firstNonEmpty(ov.Brain, b.Name, repo.Brain, agent.Brain, DefaultBrain),
+		Model:    firstNonEmpty(ov.Model, b.Model, repo.Model, agent.Model),
+		Thinking: firstNonEmpty(ov.Thinking, b.Thinking, repo.Thinking, agent.Thinking, DefaultThinking),
+	}
 }
 
 // PickupConflict reports a workflow-level pickup that silently overrides the

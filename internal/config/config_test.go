@@ -329,3 +329,46 @@ func TestMergeOverridesFlagsWin(t *testing.T) {
 		t.Errorf("label should fill the gaps: %+v", got)
 	}
 }
+
+// A reviewer that shares the author's weights shares its blind spots. The
+// workflow may name its own brain, model and thinking level.
+func TestWorkflowBrainOverridesRepoBrain(t *testing.T) {
+	agent := AgentConfig{Brain: "pi", Model: "fleet/model", Thinking: "high"}
+	prof := Defaults()
+	prof.Brain = BrainSettings{Model: "repo/model"}
+	prof.Workflows["review"] = WorkflowSettings{Brain: BrainSettings{Model: "review/model", Thinking: "max"}}
+
+	impl := ResolveBrainFor(agent, Repo{}, prof, "implement", Overrides{})
+	if impl.Model != "repo/model" || impl.Thinking != "high" {
+		t.Errorf("implement should use the repo brain: %+v", impl)
+	}
+	rev := ResolveBrainFor(agent, Repo{}, prof, "review", Overrides{})
+	if rev.Model != "review/model" || rev.Thinking != "max" {
+		t.Errorf("review should use its own brain: %+v", rev)
+	}
+	if rev.Name != "pi" {
+		t.Errorf("unset fields should fall through: %+v", rev)
+	}
+
+	// Flags and labels still beat a workflow brain.
+	flagged := ResolveBrainFor(agent, Repo{}, prof, "review", Overrides{Model: "flag/model"})
+	if flagged.Model != "flag/model" {
+		t.Errorf("flag must win: %+v", flagged)
+	}
+	labelled := MergeOverrides(Overrides{}, Overrides{Model: "label/model"})
+	if got := ResolveBrainFor(agent, Repo{}, prof, "review", labelled); got.Model != "label/model" {
+		t.Errorf("label must beat the workflow brain: %+v", got)
+	}
+}
+
+func TestWorkflowBrainCanSwitchDriver(t *testing.T) {
+	prof := Defaults()
+	prof.Brain = BrainSettings{Name: "pi"}
+	prof.Workflows["review"] = WorkflowSettings{Brain: BrainSettings{Name: "opencode"}}
+	if got := ResolveBrainFor(AgentConfig{}, Repo{}, prof, "review", Overrides{}); got.Name != "opencode" {
+		t.Errorf("review driver = %q", got.Name)
+	}
+	if got := ResolveBrainFor(AgentConfig{}, Repo{}, prof, "implement", Overrides{}); got.Name != "pi" {
+		t.Errorf("implement driver = %q", got.Name)
+	}
+}

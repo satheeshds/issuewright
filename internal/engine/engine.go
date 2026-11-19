@@ -425,7 +425,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		}
 	}
 
-	choice := e.choiceFor(labels)
+	choice := e.choiceFor(labels, wf.Name())
 	driver, err := e.driverFor(choice)
 	if err != nil {
 		return e.blocked(res, perms, err)
@@ -490,7 +490,8 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	fmt.Fprintf(runLog, "# issuewright %d#%d workflow=%s attempt=%d brain=%s workdir=%s\n",
 		sel.Event.Number, res.Number, wf.Name(), attempt, choice.Name, workdir)
 
-	e.logf("running %s#%d with %s (branch %s, log %s)", wf.Name(), res.Number, choice.Name, branch, logPath)
+	e.logf("running %s#%d with %s%s%s (branch %s, log %s)", wf.Name(), res.Number, choice.Name,
+		optSuffix(" model=", choice.Model), optSuffix(" thinking=", choice.Thinking), branch, logPath)
 	runRes, runErr := driver.Run(ctx, spec, runLog)
 
 	// Flush for the enforcement scan, but keep the handle open: the checks write
@@ -720,7 +721,7 @@ func (e *Engine) rulesFor(name string) (string, error) {
 
 // choiceFor resolves the brain for one job: labels from the issue are more
 // specific than the profile, which is more specific than the fleet default.
-func (e *Engine) choiceFor(labels []string) config.BrainChoice {
+func (e *Engine) choiceFor(labels []string, workflowName string) config.BrainChoice {
 	labelOv, warnings := e.prof.LabelOverrides(labels)
 	for _, w := range warnings {
 		e.logf("warning: %s", w)
@@ -739,7 +740,7 @@ func (e *Engine) choiceFor(labels []string) config.BrainChoice {
 	if ov != e.opt.Override {
 		e.logf("label overrides for this issue: brain=%q model=%q thinking=%q", ov.Brain, ov.Model, ov.Thinking)
 	}
-	return config.ResolveBrain(e.opt.Agent, e.opt.Repo, e.prof, ov)
+	return config.ResolveBrainFor(e.opt.Agent, e.opt.Repo, e.prof, workflowName, ov)
 }
 
 func (e *Engine) driver() (brain.Driver, error) { return e.driverFor(e.BrainChoice()) }
@@ -979,6 +980,13 @@ func tokenFor(repo config.Repo) string {
 		name = "GH_TOKEN"
 	}
 	return os.Getenv(name)
+}
+
+func optSuffix(prefix, value string) string {
+	if value == "" {
+		return ""
+	}
+	return prefix + value
 }
 
 func dirExists(path string) bool {

@@ -442,6 +442,7 @@ type stubDriver struct {
 	sawPrompt   string
 	sawWorkdir  string
 	sawModel    string
+	sawModels   []string
 	sawThinking string
 	brainText   string
 }
@@ -454,6 +455,7 @@ func (d *stubDriver) Caps() brain.Caps {
 func (d *stubDriver) Run(ctx context.Context, spec brain.Spec, log io.Writer) (brain.Result, error) {
 	d.sawContinue, d.sawPrompt, d.sawWorkdir = spec.Continue, spec.Prompt, spec.Workdir
 	d.sawModel, d.sawThinking = spec.Model, spec.Thinking
+	d.sawModels = append(d.sawModels, spec.Model)
 	if d.content != "" || d.file != "" {
 		target := filepath.Join(spec.Workdir, d.file)
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -828,5 +830,51 @@ func TestReviewSkipsTheSameRevisionAndRepeatsOnNewOnes(t *testing.T) {
 	}
 	if len(h.gh.Reviews[9]) != 2 {
 		t.Errorf("a new revision was not reviewed: %v", h.gh.Calls)
+	}
+}
+
+// The reviewer and the author are allowed to be different models.
+func TestReviewCanUseADifferentModelThanImplement(t *testing.T) {
+	h := newHarness(t)
+	h.agent.Model = "provider/author"
+	h.profile.Workflows["review"] = config.WorkflowSettings{
+		Brain: config.BrainSettings{Model: "provider/reviewer"},
+	}
+	h.addIssue(110, "author work", "body")
+	h.gh.PRs = []github.PR{{
+		Number: 11, Title: "work", HeadRef: "agent/issue-11", BaseRef: "main",
+		HeadRefOID: "sha11", Labels: []string{"review:go"},
+	}}
+	dir := filepath.Join(h.agent.Workroot, "demo", "issue-11")
+	gitRun(t, h.cloneDir, "worktree", "add", "-q", "-b", "agent/issue-11", dir, "origin/main")
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "feat: work")
+	gitRun(t, dir, "push", "-q", "origin", "agent/issue-11")
+	sha := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, h.bare, "update-ref", "refs/pull/11/head", sha)
+	h.gh.PRs[0].HeadRefOID = sha
+
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"}
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	// Two runs: the implement job, then the review job.
+	if len(h.gh.Reviews[11]) != 1 {
+		t.Fatalf("no review: %v", h.gh.Calls)
+	}
+	// Review is scheduled before implement, so the reviewer's model comes first.
+	if len(drv.sawModels) != 2 {
+		t.Fatalf("expected two runs (review, implement), got %v", drv.sawModels)
+	}
+	if drv.sawModels[0] != "provider/reviewer" {
+		t.Errorf("the review used %q, want the review model", drv.sawModels[0])
+	}
+	if drv.sawModels[1] != "provider/author" {
+		t.Errorf("the implement run used %q, want the repo model", drv.sawModels[1])
+	}
+	if !strings.Contains(logs.String(), "provider/reviewer") {
+		t.Errorf("the review model should be visible in the log:\n%s", logs.String())
 	}
 }
