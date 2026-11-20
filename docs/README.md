@@ -235,6 +235,35 @@ That is how a profile edit on the base branch reaches the runner. A clone with
 local changes is left alone and the run is refused loudly, because silently
 resetting it would delete someone's work.
 
+### Answering comments
+
+A comment on a pull request is answered when it either **mentions the bot**
+(`@name`, with or without the `[bot]` suffix, plus any `issue.mentions` aliases) or
+**replies in a thread the bot opened**. Everything else is left alone — a human
+conversation is not an invitation.
+
+```
+human comment ──▶ 👀 reaction ──▶ one run per PR ──▶ replies (+ a commit, if asked and allowed)
+                                                       └─▶ resolve the bot's own threads
+```
+
+- **One run per PR**, not per comment: four comments get one coherent answer.
+- **Answers land where the comment is** — a review thread reply for an inline
+  comment, a quoted conversation comment otherwise.
+- **No loops**: the bot never answers itself or another bot, and a cursor
+  (`state/<repo>/respond-<pr>.json`) records every answered comment so a killed tick
+  cannot reply twice.
+- **Fixes only on its own branch.** If a comment asks for a change and the branch
+  starts with `branch_prefix`, the run commits and pushes. On a human's branch it
+  never pushes: the patch is posted as a `diff` block for them to apply.
+- **Resolves its own threads** once answered, never a thread a human opened.
+- A reply naming a comment id the run was not given is dropped, not guessed — an
+  answer in the wrong thread is worse than no answer.
+
+The `respond` workflow's baseline permissions are `Comment` + `Checks`; `Write` is
+granted per job, only when the branch is the runner's own (a `PermsFor` override), so
+"may it push?" is answered by the engine, not by the prompt.
+
 ### Inline review comments
 
 The reviewer writes `REVIEW.md` as YAML front matter plus prose:

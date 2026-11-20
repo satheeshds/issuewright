@@ -25,6 +25,9 @@ const (
 	IssueAssigned Kind = "issue_assigned"
 	IssueLabel    Kind = "issue_label"
 	PROpened      Kind = "pr_opened"
+	// ReviewComment starts work from a comment on a pull request: a mention of the
+	// bot, or a reply in a thread the bot opened.
+	ReviewComment Kind = "review_comment"
 	// PRLabel starts work from a label on the pull request. On repos where
 	// GitHub refuses to assign or request review from the App bot, this is the
 	// only trigger that can be automated.
@@ -57,6 +60,17 @@ type Protect struct {
 	SecretPaths   []string
 }
 
+// JobComment is one comment a run is asked to answer.
+type JobComment struct {
+	ID     int
+	Author string
+	Body   string
+	Path   string
+	Line   int
+	// IsReview marks an inline review comment (replied to on its thread).
+	IsReview bool
+}
+
 // Job is everything a workflow needs to build a prompt. It carries no GitHub
 // client and no git handle: a workflow shapes a run, it does not perform one.
 type Job struct {
@@ -83,6 +97,11 @@ type Job struct {
 	// Resume means this branch already has work: ask for a continuation rather
 	// than a fresh start.
 	Resume bool
+	// Comments are the review comments this run answers.
+	Comments []JobComment
+	// OwnBranch is true when the PR head branch is one this runner created, so a
+	// fix may be pushed to it. Never true for someone else's branch.
+	OwnBranch bool
 }
 
 // Workflow is one kind of run.
@@ -245,7 +264,7 @@ func Plan(events []Event, enabled func(Workflow) bool, defaults LabelDefaults) [
 
 func priority(k Kind) int {
 	switch k {
-	case PROpened, PRLabel, CommentMention:
+	case PROpened, PRLabel, CommentMention, ReviewComment:
 		return 0
 	case IssueAssigned, IssueLabel:
 		return 1

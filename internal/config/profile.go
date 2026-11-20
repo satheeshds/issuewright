@@ -53,6 +53,9 @@ type IssueSettings struct {
 	ReviewInProgressLabel string `yaml:"review_in_progress_label"`
 	ReviewDoneLabel       string `yaml:"review_done_label"`
 	ReviewBlockedLabel    string `yaml:"review_blocked_label"`
+	// Mentions are the strings that ask the bot to answer a comment. The bot login
+	// is always included; extra aliases go here.
+	Mentions []string `yaml:"mentions"`
 }
 
 // Check is one verification rule: when the paths match, run the commands.
@@ -332,6 +335,45 @@ func (p *Profile) PickupConflict(workflow string) string {
 	}
 	return fmt.Sprintf("workflows.%s.pickup=%q overrides issue.pickup=%q; remove one of them",
 		workflow, w.Pickup, p.Issue.Pickup)
+}
+
+// MentionHandles returns the strings that address the bot in a comment: the fixed
+// ones plus anything configured. Matching is case-insensitive and needs the "@".
+func (p *Profile) MentionHandles(botLogin string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if !strings.HasPrefix(s, "@") {
+			s = "@" + s
+		}
+		if !seen[strings.ToLower(s)] {
+			seen[strings.ToLower(s)] = true
+			out = append(out, s)
+		}
+	}
+	add(botLogin)                              // the App login…
+	add(strings.TrimSuffix(botLogin, "[bot]")) // …and how a human actually types it
+	if p != nil {
+		for _, m := range p.Issue.Mentions {
+			add(m)
+		}
+	}
+	return out
+}
+
+// Mentions reports whether a comment body addresses the bot.
+func Mentions(body string, handles []string) bool {
+	lower := strings.ToLower(body)
+	for _, h := range handles {
+		if h != "" && strings.Contains(lower, strings.ToLower(h)) {
+			return true
+		}
+	}
+	return false
 }
 
 // LabelOverrides reads brain/model/thinking out of a label list. Labels are the

@@ -50,6 +50,11 @@ type Client interface {
 	GetIssue(ctx context.Context, slug string, number int) (Issue, error)
 	ListReviewRequestedPRs(ctx context.Context, slug, login string) ([]PR, error)
 	ListPRsWithLabel(ctx context.Context, slug, label string) ([]PR, error)
+	ListOpenPRs(ctx context.Context, slug string) ([]PR, error)
+	ListCommentThreads(ctx context.Context, slug string, pr int) ([]CommentThread, []Comment, error)
+	ReplyToComment(ctx context.Context, slug string, pr int, to Comment, body string) error
+	ReactToComment(ctx context.Context, slug string, pr int, to Comment, content string) error
+	ResolveThread(ctx context.Context, threadID string) error
 	GetPR(ctx context.Context, slug string, number int) (PR, error)
 	FindPRByHead(ctx context.Context, slug, head string) (PR, bool, error)
 

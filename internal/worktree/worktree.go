@@ -394,6 +394,16 @@ func (m *Manager) DiffHunks(ctx context.Context, dir string) (map[string][]LineR
 	return hunks, nil
 }
 
+// WorkingDiff is the uncommitted diff in a worktree, used when a run produced
+// changes it may not push: the patch is handed to the human instead.
+func (m *Manager) WorkingDiff(ctx context.Context, dir string) (string, error) {
+	out, err := m.git(ctx, dir, "diff", "--no-color", "--no-ext-diff")
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
 // CommitSummary is the "cold start" context for a brain that cannot resume: what
 // already happened on this branch.
 func (m *Manager) CommitSummary(ctx context.Context, dir string, max int) (string, error) {

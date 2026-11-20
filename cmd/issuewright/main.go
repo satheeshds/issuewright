@@ -34,6 +34,7 @@ import (
 
 	// Workflow engines register themselves, the same way.
 	_ "github.com/satheeshds/issuewright/internal/workflow/implement"
+	_ "github.com/satheeshds/issuewright/internal/workflow/respond"
 	_ "github.com/satheeshds/issuewright/internal/workflow/review"
 )
 

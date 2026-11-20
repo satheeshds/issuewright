@@ -23,6 +23,14 @@ type Fake struct {
 	Assignees      map[int][]string
 	Pushed         []string
 
+	// Threads and Conversation are what the fake reports for a PR's comments.
+	Threads      map[int][]CommentThread
+	Conversation map[int][]Comment
+	Replies      []FakeReply
+	Reactions    []string
+	// ResolvedThreads records thread ids the runner resolved.
+	ResolvedThreads []string
+
 	// FailOn makes the named operation return an error.
 	FailOn string
 	// ReviewRequests lists the PR numbers GitHub would report as
@@ -39,6 +47,8 @@ func NewFake() *Fake {
 		Reviews:        map[int][]string{},
 		InlineComments: map[int][]ReviewComment{},
 		Assignees:      map[int][]string{},
+		Threads:        map[int][]CommentThread{},
+		Conversation:   map[int][]Comment{},
 	}
 }
 
@@ -132,6 +142,44 @@ func (f *Fake) ListPRsWithLabel(_ context.Context, slug, label string) ([]PR, er
 		}
 	}
 	return out, nil
+}
+
+func (f *Fake) ListOpenPRs(_ context.Context, slug string) ([]PR, error) {
+	if err := f.record("list-open-prs %s", slug); err != nil {
+		return nil, err
+	}
+	return f.PRs, nil
+}
+
+func (f *Fake) ListCommentThreads(_ context.Context, slug string, pr int) ([]CommentThread, []Comment, error) {
+	if err := f.record("list-comments %s#%d", slug, pr); err != nil {
+		return nil, nil, err
+	}
+	return f.Threads[pr], f.Conversation[pr], nil
+}
+
+func (f *Fake) ReplyToComment(_ context.Context, _ string, pr int, to Comment, body string) error {
+	if err := f.record("reply %d -> %d", pr, to.ID); err != nil {
+		return err
+	}
+	f.Replies = append(f.Replies, FakeReply{PR: pr, To: to.ID, IsReview: to.IsReview, Body: body})
+	return nil
+}
+
+func (f *Fake) ReactToComment(_ context.Context, _ string, pr int, to Comment, content string) error {
+	if err := f.record("react %d -> %d %s", pr, to.ID, content); err != nil {
+		return err
+	}
+	f.Reactions = append(f.Reactions, fmt.Sprintf("%d:%s", to.ID, content))
+	return nil
+}
+
+func (f *Fake) ResolveThread(_ context.Context, threadID string) error {
+	if err := f.record("resolve-thread %s", threadID); err != nil {
+		return err
+	}
+	f.ResolvedThreads = append(f.ResolvedThreads, threadID)
+	return nil
 }
 
 func (f *Fake) GetPR(_ context.Context, _ string, number int) (PR, error) {
@@ -252,4 +300,12 @@ func (f *Fake) PushBranch(_ context.Context, _, branch string) error {
 	}
 	f.Pushed = append(f.Pushed, branch)
 	return nil
+}
+
+// FakeReply is one reply the engine posted.
+type FakeReply struct {
+	PR       int
+	To       int
+	IsReview bool
+	Body     string
 }

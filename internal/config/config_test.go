@@ -372,3 +372,29 @@ func TestWorkflowBrainCanSwitchDriver(t *testing.T) {
 		t.Errorf("implement driver = %q", got.Name)
 	}
 }
+
+// A human types "@name", GitHub stores "@name[bot]": both must address the bot.
+func TestMentionHandles(t *testing.T) {
+	p := Defaults()
+	p.Issue.Mentions = []string{"agent"} // a short alias, without the @
+	handles := p.MentionHandles("demo-bot[bot]")
+	joined := strings.Join(handles, " ")
+	for _, want := range []string{"@demo-bot[bot]", "@demo-bot", "@agent"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("handles %v missing %q", handles, want)
+		}
+	}
+	cases := map[string]bool{
+		"@demo-bot can you look?":          true,
+		"hey @demo-bot[bot] this is wrong": true,
+		"@agent please fix":                true,
+		"unrelated: the bot is slow":       false,
+		"@demobot is a different account":  false,
+		"":                                 false,
+	}
+	for body, want := range cases {
+		if got := Mentions(body, handles); got != want {
+			t.Errorf("Mentions(%q) = %v, want %v", body, got, want)
+		}
+	}
+}

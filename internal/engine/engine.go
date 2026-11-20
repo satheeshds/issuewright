@@ -317,6 +317,7 @@ func (e *Engine) Tick(ctx context.Context) ([]Result, error) {
 		}
 	}
 
+	results = append(results, e.respondLoop(ctx)...)
 	e.cleanupMerged(ctx)
 	return results, nil
 }

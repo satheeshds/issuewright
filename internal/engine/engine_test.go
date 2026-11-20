@@ -22,6 +22,7 @@ import (
 
 	_ "github.com/satheeshds/issuewright/internal/brain/stub"
 	_ "github.com/satheeshds/issuewright/internal/workflow/implement"
+	_ "github.com/satheeshds/issuewright/internal/workflow/respond"
 	_ "github.com/satheeshds/issuewright/internal/workflow/review"
 )
 
@@ -453,6 +454,8 @@ type stubDriver struct {
 	sawModels   []string
 	sawThinking string
 	brainText   string
+	editFile    string
+	editContent string
 }
 
 func (d *stubDriver) Name() string { return "stub" }
@@ -470,6 +473,11 @@ func (d *stubDriver) Run(ctx context.Context, spec brain.Spec, log io.Writer) (b
 			return brain.Result{Driver: "stub"}, err
 		}
 		if err := os.WriteFile(target, []byte(d.content), 0o644); err != nil {
+			return brain.Result{Driver: "stub"}, err
+		}
+	}
+	if d.editFile != "" {
+		if err := os.WriteFile(filepath.Join(spec.Workdir, d.editFile), []byte(d.editContent), 0o644); err != nil {
 			return brain.Result{Driver: "stub"}, err
 		}
 	}

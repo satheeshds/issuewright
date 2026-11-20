@@ -41,6 +41,21 @@ type Inputs struct {
 	NeverRun      []string
 	SecretPaths   []string
 	Notes         []string
+
+	// Comments are the review comments this run answers (respond workflow).
+	Comments []JobComment
+	// OwnBranch means the branch belongs to this runner, so a fix may be pushed.
+	OwnBranch bool
+}
+
+// JobComment is one comment a respond run is answering.
+type JobComment struct {
+	ID       int
+	Author   string
+	Body     string
+	Path     string
+	Line     int
+	IsReview bool
 }
 
 // Render returns the prompt for a workflow.
@@ -90,8 +105,37 @@ func interpolate(tmpl string, in Inputs) string {
 		"{{SUMMARY_FILE}}", SummaryFile,
 		"{{BLOCKED_FILE}}", BlockedFile,
 		"{{REVIEW_FILE}}", ReviewFile,
+		"{{COMMENTS}}", renderComments(in.Comments),
+		"{{OWN_BRANCH}}", ownBranchNote(in.OwnBranch),
 	)
 	return r.Replace(tmpl)
+}
+
+// renderComments lays the comments out so the model can quote ids back exactly.
+func renderComments(comments []JobComment) string {
+	if len(comments) == 0 {
+		return "(no comments)"
+	}
+	var b strings.Builder
+	for i, c := range comments {
+		where := "conversation comment"
+		if c.IsReview {
+			where = fmt.Sprintf("inline comment on %s:%d", c.Path, c.Line)
+		}
+		if i > 0 {
+			b.WriteString("\n---\n")
+		}
+		fmt.Fprintf(&b, "\n### comment %d — %s (%s)\n\n```\n%s\n```\n",
+			c.ID, c.Author, where, strings.TrimSpace(c.Body))
+	}
+	return b.String()
+}
+
+func ownBranchNote(own bool) string {
+	if own {
+		return "This branch belongs to you, so you may change code and push to it."
+	}
+	return "This branch belongs to a human. You must not change code or push: answer with words, and put any suggested change in a fenced ```suggestion block."
 }
 
 func bulletOrNone(items []string) string {
