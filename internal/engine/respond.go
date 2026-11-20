@@ -38,7 +38,8 @@ func (e *Engine) findCommentWork(ctx context.Context) ([]commentJob, error) {
 		return nil, fmt.Errorf("list open pull requests: %w", err)
 	}
 
-	handles := e.prof.MentionHandles(e.opt.Repo.Bot)
+	handles := config.MentionHandles(e.opt.Repo.Bot,
+		e.opt.Agent.Mentions, e.opt.Repo.Mentions, e.prof.Issue.Mentions)
 	var out []commentJob
 	for _, pr := range prs {
 		if !e.touchedPR(pr) {

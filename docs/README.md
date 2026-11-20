@@ -237,9 +237,18 @@ resetting it would delete someone's work.
 
 ### Answering comments
 
-A comment on a pull request is answered when it either **mentions the bot**
-(`@name`, with or without the `[bot]` suffix, plus any `issue.mentions` aliases) or
-**replies in a thread the bot opened**. Everything else is left alone — a human
+A comment on a pull request is answered when it either **mentions the bot** or
+**replies in a thread the bot opened**. The bot's login is always a handle, in both
+spellings (`@name` and `@name[bot]`); add shorthands at whichever level suits:
+
+| Scope | Where | Example |
+| --- | --- | --- |
+| every repo on the machine | `[agent] mentions` in `/srv/agent/config.toml` | `mentions = ["@agent"]` |
+| one repo | `[[repo]] mentions` in the same file | `mentions = ["@fish-bot"]` |
+| one repo's rules | `issue.mentions` in `.agent/agent.yaml` | `mentions: ["@agent"]` |
+
+All three are merged (deduplicated, case-insensitive, `@` optional in config), so a
+fleet-wide `@agent` plus a repo-specific alias both work. Everything else is left alone — a human
 conversation is not an invitation.
 
 ```

@@ -1,0 +1,24 @@
+# issuewright fleet configuration — one file per machine.
+# Repo rules live in each repo's .agent/agent.yaml, never here.
+
+[agent]
+workroot = "/srv/agent/work"
+logdir   = "/srv/agent/logs"
+repos_root = "/srv/agent/repos"
+brain    = "pi"
+model    = ""
+thinking = "high"
+max_run_minutes = 90
+poll_minutes    = 10
+# Extra ways to address the bot in a comment, fleet-wide. The bot login is always
+# one; add shorthands here rather than repeating them in every repo.
+mentions = ["@agent"]
+
+[[repo]]
+name      = "daily-fish"
+path      = "/srv/agent/repos/daily-fish"
+slug      = "satheeshds/daily-fish"
+bot       = "satheesh-pi-agent[bot]"
+token_env = "GH_TOKEN"
+# Optional: extra handles for this repo only (merged with [agent].mentions).
+# mentions = ["@daily-fish-bot"]

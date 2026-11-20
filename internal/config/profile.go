@@ -337,9 +337,10 @@ func (p *Profile) PickupConflict(workflow string) string {
 		workflow, w.Pickup, p.Issue.Pickup)
 }
 
-// MentionHandles returns the strings that address the bot in a comment: the fixed
-// ones plus anything configured. Matching is case-insensitive and needs the "@".
-func (p *Profile) MentionHandles(botLogin string) []string {
+// MentionHandles collects every way of addressing the bot in a comment: the bot
+// login in both spellings, plus whatever the fleet, the repo and the profile add.
+// Matching is case-insensitive, and a leading "@" is optional in configuration.
+func MentionHandles(botLogin string, lists ...[]string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(s string) {
@@ -357,12 +358,20 @@ func (p *Profile) MentionHandles(botLogin string) []string {
 	}
 	add(botLogin)                              // the App login…
 	add(strings.TrimSuffix(botLogin, "[bot]")) // …and how a human actually types it
-	if p != nil {
-		for _, m := range p.Issue.Mentions {
+	for _, list := range lists {
+		for _, m := range list {
 			add(m)
 		}
 	}
 	return out
+}
+
+// MentionHandles is the profile-only view, for callers with no fleet config.
+func (p *Profile) MentionHandles(botLogin string) []string {
+	if p == nil {
+		return MentionHandles(botLogin)
+	}
+	return MentionHandles(botLogin, p.Issue.Mentions)
 }
 
 // Mentions reports whether a comment body addresses the bot.

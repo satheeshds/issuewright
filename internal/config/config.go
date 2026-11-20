@@ -57,6 +57,9 @@ type AgentConfig struct {
 	MaxRunMinutes int    `toml:"max_run_minutes" yaml:"max_run_minutes"`
 	PollMinutes   int    `toml:"poll_minutes" yaml:"poll_minutes"`
 	GhBin         string `toml:"gh_bin" yaml:"gh_bin"`
+	// Mentions are extra ways to address the bot in a comment, fleet-wide. The
+	// bot login is always included; this is for shorthands like "@agent".
+	Mentions []string `toml:"mentions" yaml:"mentions"`
 }
 
 // Repo is one entry of the fleet file.
@@ -69,6 +72,8 @@ type Repo struct {
 	Brain    string `toml:"brain" yaml:"brain"`
 	Model    string `toml:"model" yaml:"model"`
 	Thinking string `toml:"thinking" yaml:"thinking"`
+	// Mentions extends [agent].mentions for this repo.
+	Mentions []string `toml:"mentions" yaml:"mentions"`
 }
 
 // Overrides are the most specific layer: command-line flags and env vars.

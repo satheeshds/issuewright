@@ -398,3 +398,50 @@ func TestMentionHandles(t *testing.T) {
 		}
 	}
 }
+
+// A shorthand like "@agent" belongs in the fleet file when every repo should
+// answer to it, and in the profile when only one should.
+func TestMentionHandlesFromEveryLayer(t *testing.T) {
+	got := MentionHandles("demo-bot[bot]",
+		[]string{"@agent"},         // [agent] in config.toml
+		[]string{"helper"},         // [[repo]]
+		[]string{"@agent", "bot2"}, // .agent/agent.yaml, one duplicate
+	)
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"@demo-bot[bot]", "@demo-bot", "@agent", "@helper", "@bot2"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("handles %v missing %q", got, want)
+		}
+	}
+	if n := strings.Count(joined, "@agent"); n != 1 {
+		t.Errorf("@agent should appear once, got %d: %v", n, got)
+	}
+	if !Mentions("hey @agent, look", got) {
+		t.Error("@agent should address the bot")
+	}
+}
+
+func TestFleetConfigParsesMentions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeFile(t, path, `
+[agent]
+mentions = ["@agent"]
+
+[[repo]]
+name = "demo"
+path = "/srv/agent/repos/demo"
+slug = "acme/demo"
+bot = "demo-bot[bot]"
+mentions = ["@demo"]
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Agent.Mentions) != 1 || cfg.Agent.Mentions[0] != "@agent" {
+		t.Errorf("[agent].mentions = %v", cfg.Agent.Mentions)
+	}
+	if len(cfg.Repos[0].Mentions) != 1 || cfg.Repos[0].Mentions[0] != "@demo" {
+		t.Errorf("[[repo]].mentions = %v", cfg.Repos[0].Mentions)
+	}
+}
