@@ -344,10 +344,17 @@ func (e *Engine) suppressed(sel workflow.Selection) (Result, bool) {
 	if e.opt.Force {
 		return Result{}, false
 	}
+	// A blocked claim is only authoritative while the blocked label is present.
+	// The label was checked above, so reaching here with a blocked claim means a
+	// human removed the label and wants another attempt — which is exactly what the
+	// block comment promises.
 	claim, ok, err := e.store.LoadClaim(e.opt.Repo.Name, sel.Workflow.Name(), sel.Event.Number)
 	if err == nil && ok && claim.State == StateBlocked {
-		base.State, base.Detail = StateSkipped, "claim is blocked"
-		return base, true
+		e.logf("%s#%d: blocked label removed, retrying (previous failure: %s)",
+			sel.Workflow.Name(), sel.Event.Number, firstLines(claim.Detail, 1))
+		if err := e.store.DeleteClaim(e.opt.Repo.Name, sel.Workflow.Name(), sel.Event.Number); err != nil {
+			e.logf("warning: could not clear the blocked claim: %v", err)
+		}
 	}
 	return Result{}, false
 }
@@ -983,10 +990,21 @@ func (e *Engine) blockedWithDetail(res Result, perms workflow.Perms, detail stri
 		// The storm brake: an unassigned bot is not picked up again by accident.
 		_ = e.opt.GitHub.Unassign(context.Background(), e.opt.Repo.Slug, res.Number, e.opt.Repo.Bot)
 	}
-	_ = e.store.SaveClaim(state.Claim{
+	// Keep what the claim already knew: the branch is the checkpoint a retry
+	// resumes from, and the attempt count is how a storm shows up in the log.
+	claim := state.Claim{
 		Repo: e.opt.Repo.Name, Workflow: res.Workflow, Number: res.Number,
 		Kind: res.Kind, State: StateBlocked, Detail: res.Detail, Started: e.now(),
-	})
+	}
+	if prev, ok, err := e.store.LoadClaim(e.opt.Repo.Name, res.Workflow, res.Number); err == nil && ok {
+		claim.Branch = prev.Branch
+		claim.Attempt = prev.Attempt
+		claim.Started = prev.Started
+	}
+	if claim.Attempt == 0 {
+		claim.Attempt = 1
+	}
+	_ = e.store.SaveClaim(claim)
 	return res
 }
 

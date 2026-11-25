@@ -230,7 +230,9 @@ func TestBlockedRunLabelsCommentsUnassignsAndDoesNotRetry(t *testing.T) {
 		t.Errorf("a failed run pushed something: %v", h.gh.Pushed)
 	}
 
-	// Second tick: the claim and labels keep it quiet.
+	// Second tick: the blocked label keeps it quiet (discovery reads the issue's
+	// labels, not the fake's record of label actions).
+	h.gh.Issues[0].Labels = []string{"agent:blocked"}
 	h.gh.Labels[7] = append(h.gh.Labels[7], "agent:blocked")
 	h.gh.Issues[0].Assignees = []string{h.repo.Bot}
 	results, err = e.Tick(context.Background())
@@ -1163,5 +1165,73 @@ func TestBlockedReviewIsLabelled(t *testing.T) {
 	}
 	if strings.Contains(labels, "review:in-progress") {
 		t.Errorf("in-progress left behind on failure: %q", labels)
+	}
+}
+
+// The block comment tells a human to "remove agent:blocked to try again", and the
+// runner skipped on a claim record instead — so removing the label did nothing.
+// The blocked claim is only authoritative while the label is there.
+func TestRemovingTheBlockedLabelRetriesTheIssue(t *testing.T) {
+	h := newHarness(t)
+	h.addIssue(120, "will fail once", "body")
+	e, _ := h.engine(t, &stubDriver{fail: true})
+	if results, err := e.Tick(context.Background()); err != nil || results[0].State != StateBlocked {
+		t.Fatalf("first tick = %+v %v", results, err)
+	}
+	claimPath := filepath.Join(filepath.Dir(h.agent.Workroot), "state", "demo", "implement-120.json")
+	if _, err := os.Stat(claimPath); err != nil {
+		t.Fatalf("no blocked claim: %v", err)
+	}
+
+	// The human removes the label and re-assigns: this must retry, not skip.
+	h.gh.Issues[0].Labels = []string{"agent:go"}
+	h.gh.Issues[0].Assignees = []string{h.repo.Bot}
+	h.gh.Labels[120] = nil
+	e2, logs := h.engine(t, &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n"})
+	results, err := e2.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("second tick: %v\n%s", err, logs)
+	}
+	if len(results) == 0 || results[0].State != StateDone {
+		t.Fatalf("results = %+v\n%s", results, logs)
+	}
+	if !strings.Contains(logs.String(), "blocked label removed, retrying") {
+		t.Errorf("the retry should be explained:\n%s", logs.String())
+	}
+	if _, err := os.Stat(claimPath); err != nil {
+		// The run finished, so the claim now says done — it must not still say blocked.
+		t.Logf("claim after retry: %v", err)
+	}
+}
+
+// A blocked claim keeps the branch it was working on, so a retry resumes there
+// instead of starting over.
+func TestBlockedClaimKeepsBranchAndAttempt(t *testing.T) {
+	h := newHarness(t)
+	h.addIssue(121, "fails after preparing", "body")
+	e, _ := h.engine(t, &stubDriver{fail: true, file: prompts.SummaryFile})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(h.agent.Workroot), "state", "demo", "implement-121.json"))
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	var claim struct {
+		Branch  string `json:"branch"`
+		Attempt int    `json:"attempt"`
+		State   string `json:"state"`
+	}
+	if err := json.Unmarshal(raw, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.State != StateBlocked {
+		t.Errorf("state = %q", claim.State)
+	}
+	if claim.Branch != "agent/issue-121" {
+		t.Errorf("branch = %q, want the worktree's branch (a retry resumes from it)", claim.Branch)
+	}
+	if claim.Attempt < 1 {
+		t.Errorf("attempt = %d, want at least 1", claim.Attempt)
 	}
 }
