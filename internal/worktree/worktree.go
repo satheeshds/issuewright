@@ -462,3 +462,30 @@ func (m *Manager) Cleanup(ctx context.Context, merged func(branch string) bool) 
 	}
 	return removed, nil
 }
+
+// DiffPaths renders the change to specific paths as a patch, including files that
+// are new (they are marked intent-to-add first, otherwise git ignores them).
+func (m *Manager) DiffPaths(ctx context.Context, dir string, paths []string) (string, error) {
+	if len(paths) == 0 {
+		return "", nil
+	}
+	for _, p := range paths {
+		_, _ = m.git(ctx, dir, "add", "-N", "--", p)
+	}
+	args := append([]string{"diff", "--no-color", "HEAD", "--"}, paths...)
+	return m.git(ctx, dir, args...)
+}
+
+// RevertPaths puts specific paths back to HEAD, deleting the ones that are new.
+func (m *Manager) RevertPaths(ctx context.Context, dir string, paths []string) error {
+	for _, p := range paths {
+		if _, err := m.git(ctx, dir, "checkout", "HEAD", "--", p); err != nil {
+			// Not in HEAD: a file the run created. Drop it from the index and disk.
+			_, _ = m.git(ctx, dir, "reset", "-q", "--", p)
+			if rmErr := os.Remove(filepath.Join(dir, p)); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				return rmErr
+			}
+		}
+	}
+	return nil
+}

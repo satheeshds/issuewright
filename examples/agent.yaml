@@ -63,6 +63,9 @@ protect:
   secret_paths: [".env", ".env.*"]
   # Templates look like secrets but are documentation: editing them is the point.
   secret_except: ["**/*.example", "**/*.sample", "**/*.template"]
+  # Paths the bot may prepare but never push: the diff goes into the PR body as a
+  # patch. CI files belong here when the App lacks the `workflows` permission.
+  propose_only: [".github/workflows/**"]
 
 prompt:
   preamble_file: .agent/rules.md

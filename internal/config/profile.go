@@ -84,6 +84,10 @@ type Protect struct {
 	// SecretExcept: templates that look like secrets but are not — `.env.example`
 	// and friends. A matched path that also matches here is treated as ordinary.
 	SecretExcept []string `yaml:"secret_except"`
+	// ProposeOnly: paths the agent may prepare but never commit. Its diff for them
+	// is moved into the pull request body as a patch for a human to apply. That is
+	// how a CI change gets proposed when the bot may not push workflows at all.
+	ProposeOnly []string `yaml:"propose_only"`
 }
 
 // PromptSettings point at the repo's own rules and PR-body notes.
@@ -223,6 +227,9 @@ func Defaults() *Profile {
 			// Templates are documentation, not secrets: a `.env.example` exists to be
 			// edited. Nothing here is a real credential.
 			SecretExcept: []string{"**/*.example", "**/*.sample", "**/*.template", "**/*.tmpl"},
+			// A workflow file is the case a bot usually cannot push at all: GitHub
+			// requires the `workflows` permission, which most App installs lack.
+			ProposeOnly: []string{".github/workflows/**"},
 		},
 		Prompt: PromptSettings{PreambleFile: filepath.Join(ProfileDir, "rules.md")},
 		Labels: LabelSettings{
@@ -277,6 +284,9 @@ func (p *Profile) applyDefaults() {
 	}
 	if len(p.Protect.SecretExcept) == 0 {
 		p.Protect.SecretExcept = d.Protect.SecretExcept
+	}
+	if len(p.Protect.ProposeOnly) == 0 {
+		p.Protect.ProposeOnly = d.Protect.ProposeOnly
 	}
 	if p.Workflows == nil {
 		p.Workflows = map[string]WorkflowSettings{}
@@ -565,6 +575,7 @@ func (p *Profile) MarshalYAML() ([]byte, error) {
 	b.WriteString("  never_run: []           # command prefixes the agent must not execute\n")
 	fmt.Fprintf(&b, "  secret_paths: [%s]\n", quoteList(p.Protect.SecretPaths))
 	fmt.Fprintf(&b, "  secret_except: [%s]   # templates that look like secrets\n", quoteList(p.Protect.SecretExcept))
+	fmt.Fprintf(&b, "  propose_only: [%s]     # prepared as a patch in the PR, never pushed\n", quoteList(p.Protect.ProposeOnly))
 
 	b.WriteString("\nprompt:\n")
 	fmt.Fprintf(&b, "  preamble_file: %s\n", p.Prompt.PreambleFile)

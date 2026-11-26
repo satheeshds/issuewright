@@ -182,6 +182,13 @@ protect:
   actually executed, not by asking it nicely in the prompt.
 - `secret_paths` blocks publishing a diff that touches them.
 
+**`propose_only`** covers paths the bot may *prepare* but not push — in practice CI
+files, which GitHub refuses to accept without the `workflows` permission. The run
+keeps working: its diff for those paths is moved into the pull request body under
+"Prepared but not pushed", and the branch is reverted, so everything else in the PR
+is pushable. A human applies the patch with `git apply`, or grants the App
+`Workflows: Read and write` and removes the entry.
+
 A check can be `advisory: true` when the repo's own baseline is red (a test suite
 with 33 known failures, an analyzer with 186 infos). Its result is still reported
 in the PR body — marked ⚠️ — but it does not block the run. Use it instead of

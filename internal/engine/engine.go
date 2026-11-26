@@ -554,6 +554,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	}
 
 	var changed []string
+	var proposedPatch string
 	if perms.Checks {
 		changed, err = e.wts.ChangedFiles(ctx, workdir)
 		if err != nil {
@@ -561,6 +562,24 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		}
 		if e.opt.Verbose {
 			e.logf("changed files: %v", changed)
+		}
+		// Paths the profile says are "prepare, don't push": keep the diff, put the
+		// worktree back, and hand the patch to the human in the PR body. This is the
+		// only way a bot can propose a CI change when it may not push workflows.
+		if proposed := checks.Filter(e.prof.Protect.ProposeOnly, changed); len(proposed) > 0 {
+			patch, perr := e.wts.DiffPaths(ctx, workdir, proposed)
+			if perr != nil {
+				return fail(fmt.Sprintf("read the proposed patch: %v", perr))
+			}
+			if err := e.wts.RevertPaths(ctx, workdir, proposed); err != nil {
+				return fail(fmt.Sprintf("put back propose-only paths: %v", err))
+			}
+			proposedPatch = patch
+			e.logf("propose-only: %d path(s) kept as a patch, not pushed: %v", len(proposed), proposed)
+			// The worktree no longer differs there, so re-read what actually changed.
+			if changed, err = e.wts.ChangedFiles(ctx, workdir); err != nil {
+				return fail(fmt.Sprintf("list changed files: %v", err))
+			}
 		}
 		if secrets := checks.SecretFilesExcept(e.prof.Protect.SecretPaths, e.prof.Protect.SecretExcept, changed); len(secrets) > 0 {
 			return fail("the change touches secret files:\n\n- " + strings.Join(secrets, "\n- "))
@@ -612,7 +631,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		if !perms.Write {
 			return fail(wf.Name() + " cannot publish without Write permission")
 		}
-		prURL, err := e.publish(ctx, res.Number, branch, title, summary, runRes.Summary, choice, checkResults)
+		prURL, err := e.publish(ctx, res.Number, branch, title, summary, runRes.Summary, proposedPatch, choice, checkResults)
 		if err != nil {
 			return fail(err.Error())
 		}
@@ -638,7 +657,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 }
 
 // publish commits leftovers, pushes the branch, and opens or updates the PR.
-func (e *Engine) publish(ctx context.Context, number int, branch, title, summary, brainSummary string, choice config.BrainChoice, results []checks.Result) (string, error) {
+func (e *Engine) publish(ctx context.Context, number int, branch, title, summary, brainSummary, proposedPatch string, choice config.BrainChoice, results []checks.Result) (string, error) {
 	dir := e.wts.IssuePath(number)
 	if branch == e.prof.BaseBranch {
 		return "", fmt.Errorf("refusing to publish to the base branch %q", branch)
@@ -648,7 +667,7 @@ func (e *Engine) publish(ctx context.Context, number int, branch, title, summary
 	}
 
 	// The agent's report is never committed, but always read first.
-	body := e.prBody(number, summary, brainSummary, choice, results)
+	body := e.prBody(number, summary, brainSummary, proposedPatch, choice, results)
 	_ = os.Remove(filepath.Join(dir, prompts.SummaryFile))
 	_ = os.Remove(filepath.Join(dir, prompts.BlockedFile))
 	_ = os.Remove(filepath.Join(dir, prompts.ReviewFile))
@@ -684,7 +703,7 @@ func (e *Engine) publish(ctx context.Context, number int, branch, title, summary
 	return created.URL, nil
 }
 
-func (e *Engine) prBody(number int, summary, brainSummary string, choice config.BrainChoice, results []checks.Result) string {
+func (e *Engine) prBody(number int, summary, brainSummary, proposedPatch string, choice config.BrainChoice, results []checks.Result) string {
 	body := strings.TrimSpace(summary)
 	if body == "" {
 		// No SUMMARY.md (a resumed run often just says "done"): use the brain's
@@ -700,6 +719,14 @@ func (e *Engine) prBody(number int, summary, brainSummary string, choice config.
 	b.WriteString(body)
 	b.WriteString("\n\n---\n\n## Checks\n\n")
 	b.WriteString(checks.Summary(results))
+	if proposedPatch != "" {
+		b.WriteString("\n## Prepared but not pushed\n\n")
+		b.WriteString("These paths are `propose_only` in `.agent/agent.yaml`: the bot may not push\n")
+		b.WriteString("them (GitHub requires the `workflows` permission for CI files). The change is\n")
+		b.WriteString("below — apply it with `git apply`, or make it by hand.\n\n```diff\n")
+		b.WriteString(strings.TrimRight(proposedPatch, "\n"))
+		b.WriteString("\n```\n")
+	}
 	if len(e.prof.Prompt.Notes) > 0 {
 		b.WriteString("\n## Before merge\n\n")
 		for _, n := range e.prof.Prompt.Notes {

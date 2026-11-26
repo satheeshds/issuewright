@@ -1437,3 +1437,94 @@ func TestDenylistAppliesWhenNoGeneratorRan(t *testing.T) {
 		t.Fatalf("denylist ignored without a generator: %+v", results[0])
 	}
 }
+
+// The bot cannot push .github/workflows/** (GitHub requires the `workflows`
+// permission), but the issue asked for a CI change. propose_only keeps the work:
+// the patch goes into the PR body and the branch stays pushable.
+func TestProposeOnlyPathsBecomeAPatchInThePR(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.ProposeOnly = []string{".github/workflows/**"}
+	h.addIssue(150, "bump the CI version", "body")
+
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- version bump\n",
+		script: "mkdir -p .github/workflows && printf 'flutter-version: 3.50.1\\n' > .github/workflows/mobile-ci.yml"}
+	e, logs := h.engine(t, drv)
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if results[0].State == StateBlocked {
+		t.Fatalf("a propose_only path blocked the run: %s", results[0].Detail)
+	}
+
+	// The branch must not carry the workflow change.
+	committed := gitRun(t, h.cloneDir, "ls-tree", "-r", "--name-only", "agent/issue-150")
+	if strings.Contains(committed, ".github/workflows/mobile-ci.yml") {
+		t.Errorf("the propose_only path was committed:\n%s", committed)
+	}
+
+	// The patch is in the PR body, ready for `git apply`.
+	body := h.gh.PRs[0].Body
+	if !strings.Contains(body, "Prepared but not pushed") {
+		t.Fatalf("no proposal section in the PR body:\n%s", body)
+	}
+	if !strings.Contains(body, "flutter-version: 3.50.1") || !strings.Contains(body, "```diff") {
+		t.Errorf("the patch is missing from the PR body:\n%s", body)
+	}
+}
+
+// A propose_only path is not a denylist violation, and it is not a secret either:
+// the two lists must not fight over the same file.
+func TestProposeOnlyIsNotADenylistViolation(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.WriteDenylist = []string{".github/workflows/**", "generated/**"}
+	h.profile.Protect.ProposeOnly = []string{".github/workflows/**"}
+	h.addIssue(151, "CI edit with both lists set", "body")
+
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n",
+		script: "mkdir -p .github/workflows && printf 'name: ci\\n' > .github/workflows/mobile-apk.yml"}
+	e, logs := h.engine(t, drv)
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if results[0].State == StateBlocked {
+		t.Fatalf("propose_only and write_denylist fought: %s", results[0].Detail)
+	}
+}
+
+// An existing workflow file is reverted to its committed content, not deleted.
+func TestProposeOnlyRevertsATrackedFile(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.ProposeOnly = []string{".github/workflows/**"}
+	// The file exists on main, with a version to bump.
+	if err := os.MkdirAll(filepath.Join(h.cloneDir, ".github", "workflows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(h.cloneDir, ".github", "workflows", "mobile-ci.yml")
+	if err := os.WriteFile(path, []byte("flutter-version: 3.47.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, h.cloneDir, "add", "-A")
+	gitRun(t, h.cloneDir, "commit", "-qm", "ci: pin flutter")
+	gitRun(t, h.cloneDir, "push", "-q", "origin", "HEAD:main")
+
+	h.addIssue(152, "bump it again", "body")
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- bump\n",
+		script: "printf 'flutter-version: 3.50.1\\n' > .github/workflows/mobile-ci.yml"}
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	worktree := filepath.Join(h.agent.Workroot, "demo", "issue-152")
+	got, err := os.ReadFile(filepath.Join(worktree, ".github", "workflows", "mobile-ci.yml"))
+	if err != nil {
+		t.Fatalf("the tracked workflow file was deleted: %v", err)
+	}
+	if string(got) != "flutter-version: 3.47.2\n" {
+		t.Errorf("the file was not reverted: %q", got)
+	}
+	if !strings.Contains(h.gh.PRs[0].Body, "3.50.1") {
+		t.Error("the proposed change is missing from the PR body")
+	}
+}
