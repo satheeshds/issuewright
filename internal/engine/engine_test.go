@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -458,6 +459,9 @@ type stubDriver struct {
 	brainText   string
 	editFile    string
 	editContent string
+	// script runs inside the worktree before anything else, for tests that need a
+	// generated file (or a commit) to exist as the agent would have left it.
+	script string
 }
 
 func (d *stubDriver) Name() string { return "stub" }
@@ -476,6 +480,17 @@ func (d *stubDriver) Run(ctx context.Context, spec brain.Spec, log io.Writer) (b
 		}
 		if err := os.WriteFile(target, []byte(d.content), 0o644); err != nil {
 			return brain.Result{Driver: "stub"}, err
+		}
+	}
+	if d.script != "" {
+		cmd := exec.Command("sh", "-c", d.script)
+		cmd.Dir = spec.Workdir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return brain.Result{Driver: "stub"}, fmt.Errorf("script: %v: %s", err, out)
 		}
 	}
 	if d.editFile != "" {
@@ -1338,5 +1353,87 @@ func TestEnvExampleIsNotASecret(t *testing.T) {
 	}
 	if results2[0].State != StateBlocked || !strings.Contains(results2[0].Detail, "secret") {
 		t.Fatalf("a real .env must still block: %+v", results2[0])
+	}
+}
+
+// The documented workflow is "edit the handler, regenerate the client". Treating
+// every denylisted path as a hand edit blocked exactly that, on a live issue:
+//
+//	the agent edited files the profile forbids: - packages/openapi/docs.go …
+//
+// A path a *successful* drift check covers was regenerated, not edited.
+func TestRegeneratedFilesAreAllowedDespiteTheDenylist(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.WriteDenylist = []string{"generated/**"}
+	h.profile.Checks = []config.Check{{
+		Name:  "codegen",
+		Paths: []string{"**"},
+		Run:   []string{"printf 'generated\\n' > generated/client.go"},
+		Drift: []string{"generated/**"},
+	}}
+	h.addIssue(140, "add an endpoint", "body")
+
+	// The agent runs the generator (the check does) and commits the output, so the
+	// committed content matches a regeneration.
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- endpoint\n",
+		script: "mkdir -p generated && printf 'generated\\n' > generated/client.go && git add -A && git commit -qm 'chore: regenerate'"}
+	e, logs := h.engine(t, drv)
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if results[0].State == StateBlocked {
+		t.Fatalf("regenerated output was treated as a hand edit: %s", results[0].Detail)
+	}
+	if len(h.gh.PRs) != 1 {
+		t.Errorf("no PR: %v", h.gh.Calls)
+	}
+}
+
+// A hand edit to a denylisted path is still refused: the generator runs, the file
+// changes, and the drift gate catches it.
+func TestHandEditedGeneratedFileIsStillRefused(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.WriteDenylist = []string{"generated/**"}
+	h.profile.Checks = []config.Check{{
+		Name:  "codegen",
+		Paths: []string{"**"},
+		Run:   []string{"printf 'generated\\n' > generated/client.go"},
+		Drift: []string{"generated/**"},
+	}}
+	h.addIssue(141, "tweak the client by hand", "body")
+
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- hand edit\n",
+		script: "mkdir -p generated && printf 'hand written\\n' > generated/client.go && git add -A && git commit -qm 'chore: hand edit'"}
+	e, logs := h.engine(t, drv)
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if results[0].State != StateBlocked {
+		t.Fatalf("a hand-edited generated file published: %+v", results[0])
+	}
+	if !strings.Contains(results[0].Detail, "still differ") && !strings.Contains(results[0].Detail, "forbids") {
+		t.Errorf("the reason should name the drift or the denylist: %s", results[0].Detail)
+	}
+}
+
+// With no codegen check selected there is no proof the files were regenerated, so
+// the denylist stands.
+func TestDenylistAppliesWhenNoGeneratorRan(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.WriteDenylist = []string{"generated/**"}
+	h.profile.Checks = nil // nothing to run, so nothing proven
+	h.addIssue(142, "edit generated without a generator", "body")
+
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- x\n",
+		script: "mkdir -p generated && printf 'x\\n' > generated/client.go"}
+	e, logs := h.engine(t, drv)
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if results[0].State != StateBlocked || !strings.Contains(results[0].Detail, "forbids") {
+		t.Fatalf("denylist ignored without a generator: %+v", results[0])
 	}
 }

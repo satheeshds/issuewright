@@ -562,9 +562,6 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		if e.opt.Verbose {
 			e.logf("changed files: %v", changed)
 		}
-		if denied := checks.DeniedWrites(e.prof.Protect.WriteDenylist, changed); len(denied) > 0 {
-			return fail("the agent edited files the profile forbids:\n\n- " + strings.Join(denied, "\n- "))
-		}
 		if secrets := checks.SecretFilesExcept(e.prof.Protect.SecretPaths, e.prof.Protect.SecretExcept, changed); len(secrets) > 0 {
 			return fail("the change touches secret files:\n\n- " + strings.Join(secrets, "\n- "))
 		}
@@ -580,9 +577,21 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	}
 
 	var checkResults []checks.Result
+	selected := checks.Select(e.prof, changed)
 	if perms.Checks && len(changed) > 0 {
 		runner := checks.New(checks.Options{Dir: workdir, Log: runLog})
-		checkResults = runner.RunAll(ctx, checks.Select(e.prof, changed))
+		checkResults = runner.RunAll(ctx, selected)
+	}
+
+	// Denylisted paths are checked *after* the generators ran: a file the profile
+	// forbids editing by hand is allowed when a drift check regenerated it, which is
+	// how `make openapi` legitimately rewrites packages/openapi/**. Without this, the
+	// documented workflow (edit handler → regenerate) blocked itself.
+	if perms.Checks {
+		if denied := e.handEdits(changed, selected, checkResults); len(denied) > 0 {
+			return fail("the agent edited files the profile forbids:\n\n- " + strings.Join(denied, "\n- ") +
+				"\n\n(regenerated output is allowed when a drift check produced it)")
+		}
 	}
 
 	// Publish.
@@ -764,6 +773,39 @@ func (e *Engine) postReview(ctx context.Context, number int, raw, fallback, work
 	}
 	e.logf("review posted: %d inline comment(s), %d in the body", len(comments), len(unplaced))
 	return nil
+}
+
+// handEdits returns denylisted paths that no successful drift check regenerated.
+//
+// `drift` is the profile's way of saying "tooling owns these paths": if such a check
+// ran and passed, the paths it covers match what the generator produces, so they were
+// regenerated rather than hand-written. Anything else on the denylist is a real edit.
+func (e *Engine) handEdits(changed []string, selected []config.Check, results []checks.Result) []string {
+	denied := checks.DeniedWrites(e.prof.Protect.WriteDenylist, changed)
+	if len(denied) == 0 {
+		return nil
+	}
+	regenerated := map[string]bool{}
+	for i, c := range selected {
+		if len(c.Drift) == 0 {
+			continue
+		}
+		if i >= len(results) || !results[i].OK {
+			continue // the generator failed: nothing is proven
+		}
+		for _, path := range denied {
+			if checks.MatchAny(c.Drift, path) {
+				regenerated[path] = true
+			}
+		}
+	}
+	var out []string
+	for _, path := range denied {
+		if !regenerated[path] {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 // placeFindings decides which findings can be attached to a line. GitHub rejects
