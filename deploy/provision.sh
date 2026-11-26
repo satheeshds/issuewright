@@ -32,6 +32,7 @@ CLONE=1
 GH_APP_ID=""
 GH_APP_KEY=""
 SET_BOT=""
+WEB=0
 
 usage() {
 	cat <<'USAGE'
@@ -53,6 +54,7 @@ provision.sh [--apply] [options]
   --gh-app-id N           GitHub App ID: install the token minter + its timer
   --gh-app-key PATH       the App's private key, already on this machine
   --set-bot LOGIN         rewrite the bot login in an existing config.toml
+  --web                   install and start the read-only status page
   --no-clone              do not create the agent's clone of the repo
   --no-docker-group       do not add the agent user to the docker group
   -h, --help              this text
@@ -109,6 +111,7 @@ while [ $# -gt 0 ]; do
 	--gh-app-id) GH_APP_ID=${2:?--gh-app-id needs a value}; shift ;;
 	--gh-app-key) GH_APP_KEY=${2:?--gh-app-key needs a value}; shift ;;
 	--set-bot) SET_BOT=${2:?--set-bot needs a login}; shift ;;
+	--web) WEB=1 ;;
 	--no-clone) CLONE=0 ;;
 	--no-docker-group) DOCKER_GROUP=0 ;;
 	-h | --help) usage; exit 0 ;;
@@ -464,6 +467,21 @@ else
 			'!/usr/bin/gh auth git-credential' 2>/dev/null || true
 	else
 		note "[dry-run] would clone into $clone"
+	fi
+fi
+
+# --- status page -----------------------------------------------------------
+if [ "$WEB" = 1 ]; then
+	step "status page"
+	if [ "$APPLY" = 1 ]; then
+		systemctl enable --now issuewright-web.service
+		note "issuewright-web.service on http://127.0.0.1:3030"
+		note "publish it with one of:"
+		note "  tailscale serve --set-path /agent http://127.0.0.1:3030"
+		note "  ssh -L 3030:localhost:3030 <box>            (then http://localhost:3030)"
+		note "  issuewright serve --bind 0.0.0.0:3030       (LAN only)"
+	else
+		note "[dry-run] systemctl enable --now issuewright-web.service"
 	fi
 fi
 

@@ -263,3 +263,19 @@ func TestProvisionInstallsTheWebUnit(t *testing.T) {
 		t.Error("the web unit is not embedded, so install cannot write it")
 	}
 }
+
+func TestProvisionCanEnableTheStatusPage(t *testing.T) {
+	out, code := runScript(t, "--slug", "acme/demo", "--bot", "bot", "--web")
+	if code != 0 {
+		t.Fatalf("dry run failed (%d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "status page") || !strings.Contains(out, "issuewright-web.service") {
+		t.Errorf("the --web flag did nothing:\n%s", out)
+	}
+
+	// Without the flag, nothing is started.
+	plain, _ := runScript(t, "--slug", "acme/demo", "--bot", "bot")
+	if strings.Contains(plain, "enable --now issuewright-web") {
+		t.Error("the status page must be opt-in")
+	}
+}
