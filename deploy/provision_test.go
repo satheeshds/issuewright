@@ -244,3 +244,22 @@ func TestProvisionWritesAToolchainPath(t *testing.T) {
 		t.Errorf("the PATH is not written into agent.env:\n%s", out)
 	}
 }
+
+// The web unit is installed by `issuewright install` alongside the others.
+func TestProvisionInstallsTheWebUnit(t *testing.T) {
+	out, code := runScript(t, "--slug", "acme/demo", "--bot", "bot")
+	if code != 0 {
+		t.Fatalf("dry run failed (%d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "systemd units") {
+		t.Fatalf("no units step:\n%s", out)
+	}
+	// install writes every embedded unit, so the web one is covered by that step.
+	units, err := Units()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := units["issuewright-web.service"]; !ok {
+		t.Error("the web unit is not embedded, so install cannot write it")
+	}
+}

@@ -39,3 +39,34 @@ func keys(m map[string][]byte) []string {
 	}
 	return out
 }
+
+// The status page ships as a third unit; it must be loopback-only and must not be
+// able to write anything (read-only by design).
+func TestWebUnitIsReadOnlyAndLoopback(t *testing.T) {
+	units, err := Units()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, ok := units["issuewright-web.service"]
+	if !ok {
+		t.Fatalf("web unit missing: %v", keys(units))
+	}
+	body := string(svc)
+	for _, want := range []string{
+		"ExecStart=/usr/local/bin/issuewright serve",
+		"--bind 127.0.0.1:3030",
+		"User=agent",
+		"EnvironmentFile=-/srv/agent/token.env",
+		"Restart=on-failure",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("web unit missing %q", want)
+		}
+	}
+	if strings.Contains(body, "0.0.0.0") {
+		t.Error("the unit must not bind a public interface by default")
+	}
+	if _, hasTimer := units["issuewright-web.timer"]; hasTimer {
+		t.Error("the web unit needs no timer")
+	}
+}

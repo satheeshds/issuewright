@@ -1,0 +1,27 @@
+[Unit]
+Description=issuewright: read-only status page
+Documentation=https://github.com/satheeshds/issuewright/blob/main/docs/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent
+Group=agent
+WorkingDirectory=/srv/agent
+# agent.env carries PATH and the token; both are optional so a PAT setup works.
+EnvironmentFile=-/srv/agent/agent.env
+EnvironmentFile=-/srv/agent/token.env
+# Bind to loopback: publishing it is a deployment choice (tailscale serve, an ssh
+# tunnel, or a LAN bind), not the unit's business.
+ExecStart=/usr/local/bin/issuewright serve --config /srv/agent/config.toml --bind 127.0.0.1:3030
+Restart=on-failure
+RestartSec=10s
+Nice=5
+PrivateTmp=yes
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
