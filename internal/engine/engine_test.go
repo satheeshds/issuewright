@@ -1235,3 +1235,82 @@ func TestBlockedClaimKeepsBranchAndAttempt(t *testing.T) {
 		t.Errorf("attempt = %d, want at least 1", claim.Attempt)
 	}
 }
+
+// A claim outliving its issue is how the status page nags about finished work. A
+// blocked claim for a merged PR must disappear on the next tick.
+func TestMergedPRAreClaimsDropped(t *testing.T) {
+	h := newHarness(t)
+	// The PR exists and is merged: GetPR knows it, the open list does not.
+	h.gh.PRs = []github.PR{{
+		Number: 61, Title: "merged work", HeadRef: "agent/issue-61", BaseRef: "main",
+		State: "MERGED", HeadRefOID: "sha61", Labels: []string{"review:blocked"},
+	}}
+	claimDir := filepath.Join(filepath.Dir(h.agent.Workroot), "state", "demo")
+	if err := os.MkdirAll(claimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(claimDir, "review-61.json")
+	if err := os.WriteFile(claimPath, []byte(
+		`{"repo":"demo","workflow":"review","number":61,"kind":"pr_label","state":"blocked","detail":"push rejected"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e, logs := h.engine(t, &stubDriver{})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if _, err := os.Stat(claimPath); !os.IsNotExist(err) {
+		t.Fatalf("the claim for a merged PR survived: %v", err)
+	}
+	if !strings.Contains(logs.String(), "closed or merged") {
+		t.Errorf("the drop should be explained:\n%s", logs.String())
+	}
+}
+
+// A blocked issue is still open — its claim must stay, or the page would hide work
+// that genuinely needs a human.
+func TestOpenIssueClaimsSurvive(t *testing.T) {
+	h := newHarness(t)
+	// Open, but no agent:go label, so discovery does not list it: exactly the case
+	// where a naive "not in the open list" rule would delete a live claim.
+	h.gh.Issues = []github.Issue{{Number: 62, Title: "still open", State: "OPEN"}}
+	claimDir := filepath.Join(filepath.Dir(h.agent.Workroot), "state", "demo")
+	if err := os.MkdirAll(claimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(claimDir, "implement-62.json")
+	if err := os.WriteFile(claimPath, []byte(
+		`{"repo":"demo","workflow":"implement","number":62,"kind":"issue_label","state":"blocked","detail":"checks failed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e, _ := h.engine(t, &stubDriver{})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(claimPath); err != nil {
+		t.Fatalf("a claim for an open issue was dropped: %v", err)
+	}
+}
+
+// A closed issue's claim goes away, so the page stops showing it.
+func TestClosedIssueClaimsAreDropped(t *testing.T) {
+	h := newHarness(t)
+	h.gh.Issues = []github.Issue{{Number: 63, Title: "done by hand", State: "CLOSED"}}
+	claimDir := filepath.Join(filepath.Dir(h.agent.Workroot), "state", "demo")
+	if err := os.MkdirAll(claimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(claimDir, "implement-63.json")
+	if err := os.WriteFile(claimPath, []byte(
+		`{"repo":"demo","workflow":"implement","number":63,"kind":"issue_assigned","state":"blocked","detail":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := h.engine(t, &stubDriver{})
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(claimPath); !os.IsNotExist(err) {
+		t.Fatalf("the claim for a closed issue survived: %v", err)
+	}
+}

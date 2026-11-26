@@ -220,6 +220,11 @@ It reads only what the runner already writes — claims in `/srv/agent/state`, J
 logs, the token expiry, `systemctl` for the timers — so it loads instantly and works
 with the network down.
 
+**It does not nag about finished work.** A claim is dropped by the next tick when its
+issue is closed or its pull request is merged or closed — discovery only lists open
+objects, and a claim missing from those lists is confirmed with one API call before it
+is deleted, so a job that merely lost its label is not silently hidden.
+
 **Read-only, by design.** There is no button that starts a run. The labels are the
 only switch, and the page tells you which one:
 

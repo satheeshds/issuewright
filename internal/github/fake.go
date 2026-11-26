@@ -78,6 +78,9 @@ func (f *Fake) ListAssignedIssues(_ context.Context, slug, login string) ([]Issu
 	}
 	var out []Issue
 	for _, i := range f.Issues {
+		if !isOpen(i.State) {
+			continue
+		}
 		for _, a := range i.Assignees {
 			if a == login {
 				out = append(out, i)
@@ -93,6 +96,9 @@ func (f *Fake) ListIssuesWithLabel(_ context.Context, slug, label string) ([]Iss
 	}
 	var out []Issue
 	for _, i := range f.Issues {
+		if !isOpen(i.State) {
+			continue
+		}
 		for _, l := range i.Labels {
 			if l == label {
 				out = append(out, i)
@@ -120,6 +126,9 @@ func (f *Fake) ListReviewRequestedPRs(_ context.Context, slug, login string) ([]
 	}
 	var out []PR
 	for _, pr := range f.PRs {
+		if !isOpen(pr.State) {
+			continue
+		}
 		for _, n := range f.ReviewRequests {
 			if pr.Number == n {
 				out = append(out, pr)
@@ -135,6 +144,9 @@ func (f *Fake) ListPRsWithLabel(_ context.Context, slug, label string) ([]PR, er
 	}
 	var out []PR
 	for _, pr := range f.PRs {
+		if !isOpen(pr.State) {
+			continue
+		}
 		for _, l := range pr.Labels {
 			if l == label {
 				out = append(out, pr)
@@ -148,7 +160,18 @@ func (f *Fake) ListOpenPRs(_ context.Context, slug string) ([]PR, error) {
 	if err := f.record("list-open-prs %s", slug); err != nil {
 		return nil, err
 	}
-	return f.PRs, nil
+	var out []PR
+	for _, pr := range f.PRs {
+		if isOpen(pr.State) {
+			out = append(out, pr)
+		}
+	}
+	return out, nil
+}
+
+// isOpen treats an empty state as open, because most fixtures do not set one.
+func isOpen(state string) bool {
+	return state == "" || strings.EqualFold(state, "OPEN")
 }
 
 func (f *Fake) ListCommentThreads(_ context.Context, slug string, pr int) ([]CommentThread, []Comment, error) {

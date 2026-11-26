@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -318,6 +319,9 @@ func (e *Engine) Tick(ctx context.Context) ([]Result, error) {
 	}
 
 	results = append(results, e.respondLoop(ctx)...)
+	// A claim outliving its issue is how the status page ends up nagging about work
+	// that was merged or closed, so drop those before anything else looks at them.
+	e.pruneClosedClaims(ctx, issues, prs)
 	e.cleanupMerged(ctx)
 	return results, nil
 }
@@ -1006,6 +1010,58 @@ func (e *Engine) blockedWithDetail(res Result, perms workflow.Perms, detail stri
 	}
 	_ = e.store.SaveClaim(claim)
 	return res
+}
+
+// pruneClosedClaims deletes claims whose issue or pull request is closed or merged.
+//
+// Discovery only lists *open* objects, so a claim missing from those sets is
+// suspect — but a missing label looks the same, hence the confirm-by-API step. Only
+// suspects cost a call, and a claim that is still open is kept.
+func (e *Engine) pruneClosedClaims(ctx context.Context, openIssues []github.Issue, openPRs []github.PR) {
+	claims, err := e.store.Claims(e.opt.Repo.Name)
+	if err != nil {
+		e.logf("warning: could not read claims: %v", err)
+		return
+	}
+	open := map[string]bool{}
+	for _, is := range openIssues {
+		open["issue:"+strconv.Itoa(is.Number)] = true
+	}
+	for _, pr := range openPRs {
+		open["pr:"+strconv.Itoa(pr.Number)] = true
+	}
+	for _, c := range claims {
+		if c.State == StateRunning {
+			continue
+		}
+		isPR := strings.HasPrefix(c.Kind, "pr_") || c.Kind == string(workflow.ReviewComment)
+		key := "issue:" + strconv.Itoa(c.Number)
+		if isPR {
+			key = "pr:" + strconv.Itoa(c.Number)
+		}
+		if open[key] {
+			continue // still listed as open: nothing to prune
+		}
+
+		closed := false
+		if isPR {
+			if pr, err := e.opt.GitHub.GetPR(ctx, e.opt.Repo.Slug, c.Number); err == nil {
+				closed = strings.EqualFold(pr.State, "MERGED") || strings.EqualFold(pr.State, "CLOSED")
+			}
+		} else {
+			if is, err := e.opt.GitHub.GetIssue(ctx, e.opt.Repo.Slug, c.Number); err == nil {
+				closed = strings.EqualFold(is.State, "CLOSED")
+			}
+		}
+		if !closed {
+			continue
+		}
+		if err := e.store.DeleteClaim(e.opt.Repo.Name, c.Workflow, c.Number); err != nil {
+			e.logf("warning: could not drop claim %s#%d: %v", c.Workflow, c.Number, err)
+			continue
+		}
+		e.logf("dropped %s#%d: the %s is closed or merged", c.Workflow, c.Number, map[bool]string{true: "pull request", false: "issue"}[isPR])
+	}
 }
 
 // cleanupMerged removes worktrees whose PR is merged.
