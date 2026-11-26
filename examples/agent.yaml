@@ -61,6 +61,8 @@ protect:
     - make db-push
     - psql
   secret_paths: [".env", ".env.*"]
+  # Templates look like secrets but are documentation: editing them is the point.
+  secret_except: ["**/*.example", "**/*.sample", "**/*.template"]
 
 prompt:
   preamble_file: .agent/rules.md

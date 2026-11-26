@@ -565,7 +565,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		if denied := checks.DeniedWrites(e.prof.Protect.WriteDenylist, changed); len(denied) > 0 {
 			return fail("the agent edited files the profile forbids:\n\n- " + strings.Join(denied, "\n- "))
 		}
-		if secrets := checks.SecretFiles(e.prof.Protect.SecretPaths, changed); len(secrets) > 0 {
+		if secrets := checks.SecretFilesExcept(e.prof.Protect.SecretPaths, e.prof.Protect.SecretExcept, changed); len(secrets) > 0 {
 			return fail("the change touches secret files:\n\n- " + strings.Join(secrets, "\n- "))
 		}
 	}

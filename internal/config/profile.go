@@ -81,6 +81,9 @@ type Protect struct {
 	NeverRun []string `yaml:"never_run"`
 	// SecretPaths: files that must never appear in a pushed diff.
 	SecretPaths []string `yaml:"secret_paths"`
+	// SecretExcept: templates that look like secrets but are not — `.env.example`
+	// and friends. A matched path that also matches here is treated as ordinary.
+	SecretExcept []string `yaml:"secret_except"`
 }
 
 // PromptSettings point at the repo's own rules and PR-body notes.
@@ -215,8 +218,13 @@ func Defaults() *Profile {
 			ReviewDoneLabel: DefaultReviewDoneLabel, ReviewBlockedLabel: DefaultReviewBlockedLabel},
 		BranchPrefix: DefaultBranchPrefix,
 		BaseBranch:   DefaultBaseBranch,
-		Protect:      Protect{SecretPaths: []string{".env", ".env.*"}},
-		Prompt:       PromptSettings{PreambleFile: filepath.Join(ProfileDir, "rules.md")},
+		Protect: Protect{
+			SecretPaths: []string{".env", ".env.*"},
+			// Templates are documentation, not secrets: a `.env.example` exists to be
+			// edited. Nothing here is a real credential.
+			SecretExcept: []string{"**/*.example", "**/*.sample", "**/*.template", "**/*.tmpl"},
+		},
+		Prompt: PromptSettings{PreambleFile: filepath.Join(ProfileDir, "rules.md")},
 		Labels: LabelSettings{
 			ModelPrefix:    DefaultModelLabelPrefix,
 			ThinkingPrefix: DefaultThinkingLabelPrefix,
@@ -266,6 +274,9 @@ func (p *Profile) applyDefaults() {
 	}
 	if len(p.Protect.SecretPaths) == 0 {
 		p.Protect.SecretPaths = d.Protect.SecretPaths
+	}
+	if len(p.Protect.SecretExcept) == 0 {
+		p.Protect.SecretExcept = d.Protect.SecretExcept
 	}
 	if p.Workflows == nil {
 		p.Workflows = map[string]WorkflowSettings{}
@@ -553,6 +564,7 @@ func (p *Profile) MarshalYAML() ([]byte, error) {
 	b.WriteString("  write_denylist: []      # files the agent must never edit by hand\n")
 	b.WriteString("  never_run: []           # command prefixes the agent must not execute\n")
 	fmt.Fprintf(&b, "  secret_paths: [%s]\n", quoteList(p.Protect.SecretPaths))
+	fmt.Fprintf(&b, "  secret_except: [%s]   # templates that look like secrets\n", quoteList(p.Protect.SecretExcept))
 
 	b.WriteString("\nprompt:\n")
 	fmt.Fprintf(&b, "  preamble_file: %s\n", p.Prompt.PreambleFile)

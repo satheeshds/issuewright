@@ -445,3 +445,23 @@ mentions = ["@demo"]
 		t.Errorf("[[repo]].mentions = %v", cfg.Repos[0].Mentions)
 	}
 }
+
+func TestSecretExceptDefaultsAndParsing(t *testing.T) {
+	if got := Defaults().Protect.SecretExcept; len(got) == 0 {
+		t.Fatal("defaults should carry template exceptions")
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ProfileDir, ProfileFile), `
+version: 1
+protect:
+  secret_paths: [".env", ".env.*"]
+  secret_except: ["**/*.example"]
+`)
+	p, err := LoadProfile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Protect.SecretExcept) != 1 || p.Protect.SecretExcept[0] != "**/*.example" {
+		t.Errorf("secret_except = %v", p.Protect.SecretExcept)
+	}
+}

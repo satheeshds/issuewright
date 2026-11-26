@@ -1314,3 +1314,29 @@ func TestClosedIssueClaimsAreDropped(t *testing.T) {
 		t.Fatalf("the claim for a closed issue survived: %v", err)
 	}
 }
+
+// A run that edits `.env.example` is doing documentation, not leaking a secret.
+func TestEnvExampleIsNotASecret(t *testing.T) {
+	h := newHarness(t)
+	h.addIssue(130, "document a new variable", "body")
+	e, logs := h.engine(t, &stubDriver{file: ".env.example", content: "NEW_VAR=\n"})
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if results[0].State == StateBlocked {
+		t.Fatalf(".env.example was treated as a secret: %s", results[0].Detail)
+	}
+
+	// The real thing still blocks.
+	h2 := newHarness(t)
+	h2.addIssue(131, "leak a secret", "body")
+	e2, logs2 := h2.engine(t, &stubDriver{file: ".env", content: "TOKEN=abc\n"})
+	results2, err := e2.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs2)
+	}
+	if results2[0].State != StateBlocked || !strings.Contains(results2[0].Detail, "secret") {
+		t.Fatalf("a real .env must still block: %+v", results2[0])
+	}
+}

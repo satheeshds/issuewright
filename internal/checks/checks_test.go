@@ -281,3 +281,24 @@ checks:
 }
 
 func yamlUnmarshal(raw []byte, v any) error { return yaml.Unmarshal(raw, v) }
+
+// `.env.example` matches `.env.*` but is a template: blocking it stops a run that
+// meant no harm, which is exactly what happened on a live issue.
+func TestSecretFilesExceptTemplates(t *testing.T) {
+	secrets := []string{".env", ".env.*", "**/.env", "**/.env.*"}
+	except := []string{"**/*.example", "**/*.sample", "**/*.template"}
+	changed := []string{
+		".env", ".env.local", "apps/api/.env", "apps/api/.env.local",
+		".env.example", "apps/api/.env.example", "config/app.template",
+	}
+	got := SecretFilesExcept(secrets, except, changed)
+	want := []string{".env", ".env.local", "apps/api/.env", "apps/api/.env.local"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("secrets = %v, want %v", got, want)
+	}
+	// Without an exception list every secret-looking path is reported again
+	// (six of the seven: `config/app.template` is not secret-shaped).
+	if n := len(SecretFilesExcept(secrets, nil, changed)); n != 6 {
+		t.Errorf("no exceptions = %d paths, want 6", n)
+	}
+}

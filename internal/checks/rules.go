@@ -91,6 +91,22 @@ func SecretFiles(patterns []string, changed []string) []string {
 	return Filter(patterns, changed)
 }
 
+// SecretFilesExcept is SecretFiles minus the templates: `.env.example` matches
+// `.env.*` but is documentation, and blocking it stops a run that meant no harm.
+func SecretFilesExcept(patterns, except, changed []string) []string {
+	var out []string
+	for _, path := range changed {
+		if !MatchAny(patterns, path) {
+			continue
+		}
+		if len(except) > 0 && MatchAny(except, path) {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
+}
+
 // DeniedWrites returns changed paths the agent was told never to touch by hand.
 func DeniedWrites(patterns []string, changed []string) []string {
 	return Filter(patterns, changed)
