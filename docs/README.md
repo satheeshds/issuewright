@@ -204,7 +204,7 @@ workflows:
 works on a phone as well as a laptop:
 
 ```bash
-issuewright serve --bind 127.0.0.1:3030          # or --bind 0.0.0.0:3030 on a LAN
+issuewright serve --bind 127.0.0.1:3040          # or --bind 0.0.0.0:3040 on a LAN
 sudo issuewright install && sudo systemctl enable --now issuewright-web   # as a unit
 ```
 
@@ -237,13 +237,17 @@ the claim and the cursor — which is exactly what caused three silent stalls al
 
 | Where | How |
 | --- | --- |
-| tailnet (this box) | `tailscale serve --set-path /agent http://127.0.0.1:3030` → `https://<host>.<tailnet>.ts.net/agent` |
-| LAN | `issuewright serve --bind 0.0.0.0:3030`, same trust model as the admin UI |
-| any box, private | `issuewright serve` on loopback + `ssh -L 3030:localhost:3030 <box>` |
+| tailnet (this box) | `tailscale serve --bg --set-path /agent http://127.0.0.1:3040` → `https://<host>.<tailnet>.ts.net/agent` |
+| LAN | `issuewright serve --bind 0.0.0.0:3040`, same trust model as the admin UI |
+| any box, private | `issuewright serve` on loopback + `ssh -L 3040:localhost:3040 <box>` |
 | public (not advised) | put it behind Caddy/nginx with auth |
 
-The unit binds loopback on purpose: publishing is a deployment decision, not the
-service's. Tailscale is a recipe, not a dependency — nothing about the page needs it.
+The unit binds loopback on purpose, and the address is a default rather than a
+constant: `AGENT_WEB_BIND` in `agent.env` overrides it. The first deployment picked
+3030 and collided with an unrelated Pi session on the same box — the server now binds
+before it announces anything, so a taken port fails with
+`cannot listen on 127.0.0.1:3030: address already in use` instead of a restart loop
+that looks like it started. Tailscale is a recipe, not a dependency — nothing about the page needs it.
 
 ## What happens on a run
 

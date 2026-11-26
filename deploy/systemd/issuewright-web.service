@@ -14,7 +14,11 @@ EnvironmentFile=-/srv/agent/agent.env
 EnvironmentFile=-/srv/agent/token.env
 # Bind to loopback: publishing it is a deployment choice (tailscale serve, an ssh
 # tunnel, or a LAN bind), not the unit's business.
-ExecStart=/usr/local/bin/issuewright serve --config /srv/agent/config.toml --bind 127.0.0.1:3030
+#
+# 3030 was a bad default: a Pi session on the same box listens there (and on 3031).
+# Override AGENT_WEB_BIND in agent.env if this collides too.
+Environment=AGENT_WEB_BIND=127.0.0.1:3040
+ExecStart=/usr/local/bin/issuewright serve --config /srv/agent/config.toml --bind ${AGENT_WEB_BIND}
 Restart=on-failure
 RestartSec=10s
 Nice=5

@@ -54,7 +54,7 @@ func TestWebUnitIsReadOnlyAndLoopback(t *testing.T) {
 	body := string(svc)
 	for _, want := range []string{
 		"ExecStart=/usr/local/bin/issuewright serve",
-		"--bind 127.0.0.1:3030",
+		"--bind ${AGENT_WEB_BIND}",
 		"User=agent",
 		"EnvironmentFile=-/srv/agent/token.env",
 		"Restart=on-failure",
@@ -68,5 +68,21 @@ func TestWebUnitIsReadOnlyAndLoopback(t *testing.T) {
 	}
 	if _, hasTimer := units["issuewright-web.timer"]; hasTimer {
 		t.Error("the web unit needs no timer")
+	}
+}
+
+// 3030 collided with a Pi session on the first real deployment, so the port is a
+// default that can be overridden from agent.env.
+func TestWebUnitPortIsOverridable(t *testing.T) {
+	units, err := Units()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(units["issuewright-web.service"])
+	if !strings.Contains(body, "Environment=AGENT_WEB_BIND=127.0.0.1:3040") {
+		t.Error("the unit should carry a default bind address")
+	}
+	if !strings.Contains(body, "--bind ${AGENT_WEB_BIND}") {
+		t.Error("ExecStart should use the overridable variable, not a literal")
 	}
 }

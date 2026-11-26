@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -244,7 +245,7 @@ func cmdRun(ctx context.Context, args []string) error {
 func cmdServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath(), "fleet config file")
-	bind := fs.String("bind", "127.0.0.1:3030", "address to listen on")
+	bind := fs.String("bind", envOr("AGENT_WEB_BIND", "127.0.0.1:3040"), "address to listen on")
 	refresh := fs.Duration("refresh", 15*time.Second, "page refresh interval (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -267,9 +268,15 @@ func cmdServe(ctx context.Context, args []string) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errc := make(chan error, 1)
+	// Bind before announcing, so "listening" is never printed for a port that was
+	// already taken (the failure mode on the first box: another process held it).
+	ln, err := net.Listen("tcp", *bind)
+	if err != nil {
+		return fmt.Errorf("cannot listen on %s: %w (set --bind or AGENT_WEB_BIND)", *bind, err)
+	}
 	go func() {
 		fmt.Fprintf(os.Stderr, "issuewright serve: listening on http://%s (read-only)\n", *bind)
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 		}
 	}()

@@ -475,11 +475,11 @@ if [ "$WEB" = 1 ]; then
 	step "status page"
 	if [ "$APPLY" = 1 ]; then
 		systemctl enable --now issuewright-web.service
-		note "issuewright-web.service on http://127.0.0.1:3030"
+		note "issuewright-web.service on http://127.0.0.1:3040 (AGENT_WEB_BIND overrides)"
 		note "publish it with one of:"
-		note "  tailscale serve --set-path /agent http://127.0.0.1:3030"
-		note "  ssh -L 3030:localhost:3030 <box>            (then http://localhost:3030)"
-		note "  issuewright serve --bind 0.0.0.0:3030       (LAN only)"
+		note "  tailscale serve --bg --set-path /agent http://127.0.0.1:3040"
+		note "  ssh -L 3040:localhost:3040 <box>            (then http://localhost:3040)"
+		note "  issuewright serve --bind 0.0.0.0:3040       (LAN only)"
 	else
 		note "[dry-run] systemctl enable --now issuewright-web.service"
 	fi
