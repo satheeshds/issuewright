@@ -198,6 +198,53 @@ workflows:
     enabled: false     # this repo only gets `implement`
 ```
 
+## The status page
+
+`issuewright serve` renders what the runner is doing on this box, on one page that
+works on a phone as well as a laptop:
+
+```bash
+issuewright serve --bind 127.0.0.1:3030          # or --bind 0.0.0.0:3030 on a LAN
+sudo issuewright install && sudo systemctl enable --now issuewright-web   # as a unit
+```
+
+| Block | Answers |
+| --- | --- |
+| **Health** | the token's remaining life, every timer with its next elapse and when it last fired |
+| **Running** | the claim that is in flight, how long, on which branch, and the last few commands it ran |
+| **Stuck** | every blocked job with the reason it stopped, the tail of the failing run, **the label that unblocks it**, and a link to the issue or PR |
+| **Recently finished** | the last few jobs, so "did it land?" needs no `journalctl` |
+| **Recent runs** | workflow, issue, duration, cost, tool count, and a link to the full log |
+
+It reads only what the runner already writes — claims in `/srv/agent/state`, JSONL run
+logs, the token expiry, `systemctl` for the timers — so it loads instantly and works
+with the network down.
+
+**Read-only, by design.** There is no button that starts a run. The labels are the
+only switch, and the page tells you which one:
+
+| Stuck job | What unblocks it |
+| --- | --- |
+| blocked issue | remove `agent:blocked` (the next tick retries) |
+| failed review | add `review:go` back |
+| blocked respond | nothing — the cursor only advances on a successful reply, so it retries itself |
+
+A `POST` to any endpoint returns **405** with that explanation. A web endpoint that
+ran jobs would be a second scheduler and a fourth source of truth next to the label,
+the claim and the cursor — which is exactly what caused three silent stalls already.
+
+### Publishing it (pick one)
+
+| Where | How |
+| --- | --- |
+| tailnet (this box) | `tailscale serve --set-path /agent http://127.0.0.1:3030` → `https://<host>.<tailnet>.ts.net/agent` |
+| LAN | `issuewright serve --bind 0.0.0.0:3030`, same trust model as the admin UI |
+| any box, private | `issuewright serve` on loopback + `ssh -L 3030:localhost:3030 <box>` |
+| public (not advised) | put it behind Caddy/nginx with auth |
+
+The unit binds loopback on purpose: publishing is a deployment decision, not the
+service's. Tailscale is a recipe, not a dependency — nothing about the page needs it.
+
 ## What happens on a run
 
 1. Discover. `tick` polls issues assigned to the bot and PRs asking for its
