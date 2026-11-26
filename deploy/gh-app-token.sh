@@ -99,7 +99,7 @@ api() {
 json_field() { sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\{0,1\}\([^",}]*\)"\{0,1\}.*/\1/p' | head -1; }
 
 write_token() {
-	local token=$1 tmp
+	local token=$1 expires=$2 tmp
 	tmp=$(mktemp "${OUT}.XXXXXX")
 	printf 'GH_TOKEN=%s\n' "$token" >"$tmp"
 	chmod 600 "$tmp"
@@ -107,6 +107,15 @@ write_token() {
 		chown "$OWNER:$(id -gn "$OWNER" 2>/dev/null || echo "$OWNER")" "$tmp"
 	fi
 	mv -f "$tmp" "$OUT"
+
+	# The status page reads this to say how long the token has left. Written next to
+	# the token file, so one directory holds everything about the credential.
+	if [ -n "$expires" ]; then
+		local expiry_file="${OUT%.env}.expiry"
+		printf '%s\n' "$expires" >"${expiry_file}.tmp"
+		chmod 644 "${expiry_file}.tmp"
+		mv -f "${expiry_file}.tmp" "$expiry_file"
+	fi
 }
 
 if [ $# -gt 0 ]; then MODE=$1; fi
@@ -162,6 +171,6 @@ fi
 if [ "$MODE" = --print ]; then
 	printf '%s\n' "$token"
 else
-	write_token "$token"
+	write_token "$token" "$expires"
 	echo "gh-app-token: installation $inst_id for $REPO, valid until $expires, written to $OUT" >&2
 fi

@@ -264,3 +264,37 @@ func TestMinterPrefersTheEnvironmentOverTheFile(t *testing.T) {
 		t.Errorf("the file won over the environment:\n%s", log)
 	}
 }
+
+// The status page needs to know how long the token has left, so the minter records
+// the expiry next to the token.
+func TestMinterWritesTheExpiry(t *testing.T) {
+	key, bindir, _ := setupAppFixtures(t)
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "token.env")
+	out, code := runMinter(t, map[string]string{
+		"PATH":          bindir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GH_APP_ID":     "42",
+		"GH_APP_KEY":    key,
+		"GH_REPO":       "acme/demo",
+		"GH_TOKEN_FILE": outFile,
+	})
+	if code != 0 {
+		t.Fatalf("minter failed (%d):\n%s", code, out)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "token.expiry"))
+	if err != nil {
+		t.Fatalf("no expiry file: %v", err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != "2026-11-17T20:00:00Z" {
+		t.Errorf("expiry = %q", got)
+	}
+	// Readable without privileges: the page runs as the agent user, and the expiry
+	// is not a secret.
+	st, err := os.Stat(filepath.Join(dir, "token.expiry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o644 {
+		t.Errorf("expiry mode = %v", st.Mode().Perm())
+	}
+}
