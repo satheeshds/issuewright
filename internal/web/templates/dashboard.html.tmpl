@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{{if gt .RefreshSec 0}}<meta http-equiv="refresh" content="{{.RefreshSec}}">{{end}}
+<title>issuewright — agent status</title>
+<style>
+  :root { color-scheme: dark; --bg:#11141a; --panel:#181c24; --line:#262c38;
+          --fg:#e7ebf2; --dim:#9aa4b4; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --go:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:14px; background:var(--bg); color:var(--fg);
+         font:15px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  h1 { font-size:16px; margin:0 0 2px; }
+  h2 { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim);
+       margin:18px 0 6px; font-weight:600; }
+  .meta { color:var(--dim); font-size:12px; }
+  .repo { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:12px; margin:0 0 14px; }
+  .row { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; padding:6px 0;
+         border-top:1px solid var(--line); }
+  .row:first-of-type { border-top:none; }
+  .tag { font-size:11px; padding:1px 6px; border-radius:999px; border:1px solid var(--line); color:var(--dim); }
+  .state-blocked { color:var(--bad); } .state-running { color:var(--go); }
+  .state-done { color:var(--ok); } .state-skipped { color:var(--dim); }
+  .detail { color:var(--warn); font-size:13px; overflow-wrap:anywhere; }
+  .detail.ok { color:var(--dim); }
+  .tail { color:var(--dim); font-size:12px; margin:2px 0 0 0; padding-left:14px; }
+  .tail code { color:var(--fg); }
+  .label { display:inline-block; font-size:12px; padding:2px 7px; border-radius:6px;
+           background:#232939; border:1px solid var(--line); }
+  .label b { color:var(--go); font-weight:600; }
+  a { color:var(--go); text-decoration:none; }
+  .empty { color:var(--dim); font-size:13px; }
+  .grid { display:grid; grid-template-columns:1fr; gap:6px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  td, th { text-align:left; padding:3px 6px; border-top:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; }
+  .overdue { color:var(--bad); }
+  @media (min-width:720px) { body { padding:20px 24px; max-width:1100px; margin:0 auto; } }
+</style>
+</head>
+<body>
+<h1>issuewright <span class="meta">{{.Version}}</span></h1>
+<div class="meta">
+  {{.Generated.Format "Mon 02 Jan 15:04:05"}} · page refreshes every {{.RefreshSec}}s ·
+  read-only — unblock by changing a label
+</div>
+
+<h2>Health</h2>
+<div class="repo">
+  <div class="grid">
+    <div class="meta">token:
+      {{if not .Token.Configured}}<span>unknown — {{.Token.Note}}</span>
+      {{else if .Token.Stale}}<span class="state-blocked">expired {{.Token.Note}}</span>
+      {{else}}<span>expires in {{.Token.ExpiresIn}}{{if .Token.Note}} · {{.Token.Note}}{{end}}</span>{{end}}
+    </div>
+    <table>
+      <tr><th>timer</th><th>next</th><th>last fired</th></tr>
+      {{range .Timers}}
+      <tr>
+        <td>{{.Unit}}</td>
+        <td class="{{if .Overdue}}overdue{{end}}">{{if .Invalid}}<span class="state-blocked">not scheduled</span>{{else}}{{.NextIn}}{{end}}</td>
+        <td class="meta">{{since .Last}} ago</td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+</div>
+
+{{range .Repos}}{{$repo := .}}
+<div class="repo">
+  <h1>{{.Name}} <span class="meta">{{.Slug}}{{if .NextTimer}} · next tick in {{.NextTimer}}{{end}}</span></h1>
+  <div class="meta">
+    clone: {{if .Clone.Missing}}<span class="state-blocked">none yet</span>{{else}}{{.Clone.Head}} {{.Clone.Subject}} · {{.Clone.Age}}{{end}}
+    · <a href="https://github.com/{{.Slug}}/issues">issues</a>
+    · <a href="https://github.com/{{.Slug}}/pulls">pull requests</a>
+  </div>
+
+  {{if .Running}}
+  <h2>Running</h2>
+  {{range .Running}}
+  <div class="row">
+    <span class="state-running">▶ {{.Workflow}} #{{.Number}}</span>
+    <span class="tag">{{.State}}</span>
+    <span class="tag">{{since .Started}} ago</span>
+    {{if .Branch}}<span class="tag">{{.Branch}}</span>{{end}}
+    <a href="{{.Link}}">open</a>
+    {{if .Tail}}<ul class="tail">{{range .Tail}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}
+  </div>
+  {{end}}
+  {{end}}
+
+  {{if .Blocked}}
+  <h2>Stuck</h2>
+  {{range .Blocked}}
+  <div class="row">
+    <span class="state-blocked">■ {{.Workflow}} #{{.Number}}</span>
+    <span class="tag">{{.Kind}}</span>
+    {{if .Attempt}}<span class="tag">attempt {{.Attempt}}</span>{{end}}
+    <a href="{{.Link}}">open on GitHub</a>
+    {{if .LogName}}<a href="/api/log/{{.LogName}}?repo={{$repo.Name}}&raw=1">run log</a>{{end}}
+    {{if .LabelName}}<div><span class="label"><b>{{.LabelName}}</b> — {{.LabelDo}}</span></div>{{end}}
+    {{if .Detail}}<div class="detail">{{.Detail}}</div>{{end}}
+    {{if .Tail}}<ul class="tail">{{range .Tail}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}
+  </div>
+  {{end}}
+  {{end}}
+
+  {{if .Finished}}
+  <h2>Recently finished</h2>
+  {{range .Finished}}
+  <div class="row">
+    <span class="state-done">✔ {{.Workflow}} #{{.Number}}</span>
+    <span class="tag">{{since .Started}} ago</span>
+    <a href="{{.Link}}">open</a>
+    {{if .Detail}}<div class="detail ok">{{.Detail}}</div>{{end}}
+  </div>
+  {{end}}
+  {{end}}
+
+  <h2>Recent runs</h2>
+  {{if .Recent}}
+  <table>
+    <tr><th>run</th><th>took</th><th>cost</th><th>tools</th><th></th></tr>
+    {{range .Recent}}
+    <tr>
+      <td>{{.Workflow}} #{{.Number}}{{if .Truncated}} <span class="state-blocked">killed</span>{{end}}</td>
+      <td>{{.DurationS}}</td>
+      <td>{{money .CostUSD}}</td>
+      <td>{{.ToolCount}}</td>
+      <td><a href="/api/log/{{.File}}?repo={{$repo.Name}}">log</a></td>
+    </tr>
+    {{if .LastError}}<tr><td colspan="5" class="detail">{{.LastError}}</td></tr>{{end}}
+    {{end}}
+  </table>
+  {{else}}
+  <div class="empty">no runs yet</div>
+  {{end}}
+
+  <div class="meta" style="margin-top:10px">
+    logs: {{.LogDir}} · {{.Journal}}
+  </div>
+</div>
+{{end}}
+
+<div class="meta">
+  Labels are the only switch: <span class="label">remove <b>agent:blocked</b></span> retries,
+  <span class="label">add <b>review:go</b></span> re-reviews.
+</div>
+</body>
+</html>
