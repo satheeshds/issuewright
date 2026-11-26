@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -274,11 +275,22 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tpl.Execute(w, s.build(r.Context())); err != nil {
-		http.Error(w, "render: "+err.Error(), http.StatusInternalServerError)
+	// Render into a buffer first: a template error halfway through would otherwise
+	// send a partial page and then a second WriteHeader ("superfluous response
+	// WriteHeader call", seen once on a live box and impossible to diagnose after).
+	var buf bytes.Buffer
+	if err := s.tpl.Execute(&buf, s.build(r.Context())); err != nil {
+		fmt.Fprintf(os.Stderr, "issuewright serve: dashboard render: %v\n", err)
+		http.Error(w, "dashboard render failed; the error is in the service log", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Length", itoa(buf.Len()))
+	_, _ = w.Write(buf.Bytes())
 }
+
+// itoa avoids pulling strconv in for one header.
+func itoa(n int) string { return fmt.Sprintf("%d", n) }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// Healthy means the state directory the page depends on is readable.

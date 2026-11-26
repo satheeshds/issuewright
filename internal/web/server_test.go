@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -260,3 +261,41 @@ func TestServerNeedsConfig(t *testing.T) {
 }
 
 var _ = context.Background
+
+// A template that fails mid-render must not send a half page and then a second
+// header ("superfluous response.WriteHeader"), which is what a live box logged.
+func TestBrokenTemplateGivesAClean500(t *testing.T) {
+	opt, _ := fixture(t)
+	srv, err := New(opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A template that writes some bytes and then fails: exactly the bad case.
+	srv.tpl = template.Must(template.New("broken").Parse(`<html>partial{{.NoSuchField}}`))
+
+	rec := get(t, srv.Handler(), "GET", "/")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "partial") {
+		t.Errorf("a partial page was sent before the error: %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "in the service log") {
+		t.Errorf("the body should point at the log: %q", rec.Body.String())
+	}
+	// http.ResponseRecorder does not police double WriteHeader; a real server does,
+	// and the buffered path is what avoids it. Assert we wrote the body once.
+	if rec.Header().Get("Content-Type") == "text/html; charset=utf-8" {
+		t.Error("the HTML content type was set even though the render failed")
+	}
+}
+
+func TestUnknownPathIs404(t *testing.T) {
+	opt, _ := fixture(t)
+	srv, _ := New(opt)
+	for _, path := range []string{"/nope", "/favicon.ico", "/api"} {
+		if rec := get(t, srv.Handler(), "GET", path); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, rec.Code)
+		}
+	}
+}

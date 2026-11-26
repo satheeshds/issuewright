@@ -254,6 +254,23 @@ before it announces anything, so a taken port fails with
 `cannot listen on 127.0.0.1:3030: address already in use` instead of a restart loop
 that looks like it started. Tailscale is a recipe, not a dependency — nothing about the page needs it.
 
+### Upgrading the binary on a live box
+
+Replace it by rename, never by writing over it: the web service and a tick may be
+executing that file, and a plain download fails with
+`curl: (23) client returned ERROR on write` / `Text file busy`, leaving a truncated
+binary behind.
+
+```bash
+sudo curl -fsSL https://github.com/satheeshds/issuewright/releases/download/<tag>/issuewright-linux-amd64 -o /tmp/issuewright
+sudo install -m 755 /tmp/issuewright /usr/local/bin/issuewright.new
+sudo mv -f /usr/local/bin/issuewright.new /usr/local/bin/issuewright
+sudo systemctl restart issuewright-web        # optional: the unit picks it up on restart
+```
+
+`provision.sh` does exactly this. A running process keeps the old inode, so nothing
+has to be stopped first.
+
 ## What happens on a run
 
 1. Discover. `tick` polls issues assigned to the bot and PRs asking for its

@@ -185,7 +185,12 @@ else
 	if [ "$APPLY" = 1 ]; then
 		tmp=$(mktemp)
 		curl -fsSL "$url" -o "$tmp" || die "download failed: $url"
-		install -m 755 "$tmp" "$PREFIX/issuewright"
+		# Write beside the target and rename: replacing a binary that a running
+		# service executes fails with "text file busy" (and a plain `curl -o` leaves
+		# it truncated). A rename swaps the inode; the running process keeps the old
+		# one.
+		install -m 755 "$tmp" "$PREFIX/issuewright.new" || die "cannot write $PREFIX/issuewright.new"
+		mv -f "$PREFIX/issuewright.new" "$PREFIX/issuewright" || die "cannot replace $PREFIX/issuewright"
 		rm -f "$tmp"
 	else
 		note "[dry-run] would download and install to $PREFIX/issuewright"
