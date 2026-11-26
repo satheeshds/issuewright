@@ -1,0 +1,4 @@
+{"type":"tool_execution_start","toolName":"bash","args":{"command":"make db-reset"}}
+{"type":"message_update","usage":{"totalTokens":120,"cost":{"total":0.002}},"assistantMessageEvent":{"type":"text_delta"}}
+{"type":"tool_execution_start","toolName":"bash","args":{"command":"npm test"}}
+{"type":"tool_execution_start","toolName":"bash","args":{"command":"ls"}}

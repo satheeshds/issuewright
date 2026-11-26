@@ -1,0 +1,2 @@
+{"type":"tool_execution_start","toolName":"bash","args":{"command":"go test ./..."}}
+{"type":"message_end","message":{"content":[{"type":"thinking","thinking":"still going"}],"stopReason":"toolUse"}}
