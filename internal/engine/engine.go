@@ -607,9 +607,19 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	// how `make openapi` legitimately rewrites packages/openapi/**. Without this, the
 	// documented workflow (edit handler → regenerate) blocked itself.
 	if perms.Checks {
-		if denied := e.handEdits(changed, selected, checkResults); len(denied) > 0 {
-			return fail("the agent edited files the profile forbids:\n\n- " + strings.Join(denied, "\n- ") +
-				"\n\n(regenerated output is allowed when a drift check produced it)")
+		denied, broken := e.handEdits(changed, selected, checkResults)
+		if len(denied) > 0 {
+			msg := "the agent edited files the profile forbids:\n\n- " + strings.Join(denied, "\n- ")
+			if len(broken) > 0 {
+				// The usual cause is not a hand edit: the generator that owns those
+				// paths never ran, so the files could not be regenerated. Say so, or
+				// the message sends people looking for a problem that is not there.
+				msg += "\n\nthe generator that owns them failed, so they could not be regenerated:\n- " +
+					strings.Join(broken, "\n- ")
+			} else {
+				msg += "\n\n(regenerated output is allowed when a drift check produced it)"
+			}
+			return fail(msg)
 		}
 	}
 
@@ -807,18 +817,33 @@ func (e *Engine) postReview(ctx context.Context, number int, raw, fallback, work
 // `drift` is the profile's way of saying "tooling owns these paths": if such a check
 // ran and passed, the paths it covers match what the generator produces, so they were
 // regenerated rather than hand-written. Anything else on the denylist is a real edit.
-func (e *Engine) handEdits(changed []string, selected []config.Check, results []checks.Result) []string {
-	denied := checks.DeniedWrites(e.prof.Protect.WriteDenylist, changed)
+func (e *Engine) handEdits(changed []string, selected []config.Check, results []checks.Result) (denied []string, brokenGenerators []string) {
+	denied = checks.DeniedWrites(e.prof.Protect.WriteDenylist, changed)
 	if len(denied) == 0 {
-		return nil
+		return nil, nil
 	}
 	regenerated := map[string]bool{}
 	for i, c := range selected {
 		if len(c.Drift) == 0 {
 			continue
 		}
+		owns := false
+		for _, path := range denied {
+			if checks.MatchAny(c.Drift, path) {
+				owns = true
+				break
+			}
+		}
+		if !owns {
+			continue
+		}
 		if i >= len(results) || !results[i].OK {
-			continue // the generator failed: nothing is proven
+			reason := "did not run"
+			if i < len(results) && len(results[i].Failures) > 0 {
+				reason = firstLine(results[i].Failures[0])
+			}
+			brokenGenerators = append(brokenGenerators, fmt.Sprintf("`%s` — %s", c.Name, reason))
+			continue
 		}
 		for _, path := range denied {
 			if checks.MatchAny(c.Drift, path) {
@@ -832,7 +857,7 @@ func (e *Engine) handEdits(changed []string, selected []config.Check, results []
 			out = append(out, path)
 		}
 	}
-	return out
+	return out, brokenGenerators
 }
 
 // placeFindings decides which findings can be attached to a line. GitHub rejects
@@ -1282,6 +1307,17 @@ func tokenFor(repo config.Repo) string {
 		name = "GH_TOKEN"
 	}
 	return os.Getenv(name)
+}
+
+// firstLine keeps a check failure to one line, for a message that quotes it.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return strings.TrimSpace(s)
 }
 
 func optSuffix(prefix, value string) string {

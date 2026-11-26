@@ -1528,3 +1528,36 @@ func TestProposeOnlyRevertsATrackedFile(t *testing.T) {
 		t.Error("the proposed change is missing from the PR body")
 	}
 }
+
+// The blocked message on a live issue said "the agent edited files the profile
+// forbids" for files it had *regenerated* — the truth was that `make openapi-dart`
+// died with `dart: not found`, so nothing was regenerated. Say that instead.
+func TestDenylistMessageNamesTheFailedGenerator(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.WriteDenylist = []string{"generated/**"}
+	h.profile.Checks = []config.Check{{
+		Name:  "codegen",
+		Paths: []string{"**"},
+		Run:   []string{"echo 'dart: not found'; exit 127"},
+		Drift: []string{"generated/**"},
+	}}
+	h.addIssue(160, "add an endpoint", "body")
+
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- endpoint\n",
+		script: "mkdir -p generated && printf 'x\\n' > generated/client.go"}
+	e, logs := h.engine(t, drv)
+	results, err := e.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	if results[0].State != StateBlocked {
+		t.Fatalf("expected a block: %+v", results[0])
+	}
+	detail := results[0].Detail
+	if !strings.Contains(detail, "the generator that owns them failed") {
+		t.Errorf("the message should name the real cause:\n%s", detail)
+	}
+	if !strings.Contains(detail, "codegen") || !strings.Contains(detail, "dart: not found") {
+		t.Errorf("the failing check and its output should be quoted:\n%s", detail)
+	}
+}
