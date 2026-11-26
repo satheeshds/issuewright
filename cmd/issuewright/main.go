@@ -10,12 +10,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/satheeshds/issuewright/deploy"
 	"github.com/satheeshds/issuewright/internal/brain"
@@ -24,6 +26,7 @@ import (
 	"github.com/satheeshds/issuewright/internal/github"
 	"github.com/satheeshds/issuewright/internal/scaffold"
 	"github.com/satheeshds/issuewright/internal/version"
+	"github.com/satheeshds/issuewright/internal/web"
 	"github.com/satheeshds/issuewright/internal/workflow"
 
 	// Brain drivers register themselves. Adding one is a package plus this line.
@@ -60,6 +63,8 @@ func run(args []string) error {
 		return cmdRun(ctx, args[1:])
 	case "status":
 		return cmdStatus(ctx, args[1:])
+	case "serve":
+		return cmdServe(ctx, args[1:])
 	case "init":
 		return cmdInit(args[1:])
 	case "install":
@@ -86,6 +91,7 @@ func usage() {
   tick     [--repo NAME] [--dry-run]     run one pass over pending events
   run      --repo NAME (--issue N | --pr N) [--workflow NAME] [--dry-run]
   status   [--repo NAME] [--json]        what is pending, in flight, blocked
+  serve    [--bind ADDR] [--refresh 15s] read-only status page for the whole box
   init     [--dir PATH] [--force]        write a starter .agent/agent.yaml
   install  [--prefix DIR] [--dry-run]    install systemd units
   new      workflow|brain NAME           scaffold a plugin
@@ -232,6 +238,49 @@ func cmdRun(ctx context.Context, args []string) error {
 		os.Exit(2)
 	}
 	return nil
+}
+
+// cmdServe runs the read-only status page until interrupted.
+func cmdServe(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	cfgPath := fs.String("config", defaultConfigPath(), "fleet config file")
+	bind := fs.String("bind", "127.0.0.1:3030", "address to listen on")
+	refresh := fs.Duration("refresh", 15*time.Second, "page refresh interval (0 disables)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	srv, err := web.New(web.Options{
+		Config:  cfg,
+		Refresh: *refresh,
+		Version: version.String(),
+	})
+	if err != nil {
+		return err
+	}
+	httpSrv := &http.Server{
+		Addr:              *bind,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	errc := make(chan error, 1)
+	go func() {
+		fmt.Fprintf(os.Stderr, "issuewright serve: listening on http://%s (read-only)\n", *bind)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errc <- err
+		}
+	}()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return httpSrv.Shutdown(shutdownCtx)
 }
 
 func cmdStatus(ctx context.Context, args []string) error {
