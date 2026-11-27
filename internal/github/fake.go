@@ -346,6 +346,14 @@ func (f *Fake) PushBranch(_ context.Context, _, branch string) error {
 	return nil
 }
 
+func (f *Fake) PushHead(_ context.Context, _, branch string) error {
+	if err := f.record("push-head %s", branch); err != nil {
+		return err
+	}
+	f.Pushed = append(f.Pushed, branch)
+	return nil
+}
+
 // FakeReply is one reply the engine posted.
 type FakeReply struct {
 	PR       int

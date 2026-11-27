@@ -73,6 +73,10 @@ type Client interface {
 	Unassign(ctx context.Context, slug string, number int, login string) error
 
 	PushBranch(ctx context.Context, dir, branch string) error
+	// PushHead pushes the worktree's HEAD to origin/<branch>. A review worktree is
+	// detached at the pull request's head, so there is no local branch to push; this
+	// is how a fix made there reaches the pull request at all.
+	PushHead(ctx context.Context, dir, branch string) error
 }
 
 // CLI is the production Client: `gh` for GitHub, `git` for the push.
@@ -407,24 +411,41 @@ func (c *CLI) Unassign(ctx context.Context, slug string, number int, login strin
 // PushBranch publishes a branch. Kept here (with the other publish operations)
 // so a workflow's permissions are checked in one place.
 func (c *CLI) PushBranch(ctx context.Context, dir, branch string) error {
+	return c.push(ctx, dir, "push", "--set-upstream", "origin", branch)
+}
+
+// PushHead pushes HEAD to a remote branch by refspec: `git push origin
+// HEAD:refs/heads/<branch>`. A detached worktree has no local branch, so
+// `push origin <branch>` would push a stale ref that happens to share the name —
+// "Everything up-to-date", and the fix silently never lands.
+func (c *CLI) PushHead(ctx context.Context, dir, branch string) error {
+	if branch == "" {
+		return fmt.Errorf("push: no branch to push to")
+	}
+	return c.push(ctx, dir, "push", "origin", "HEAD:refs/heads/"+branch)
+}
+
+// push is the git plumbing every push shares: the token helper, a worktree, and no
+// interactive prompt.
+func (c *CLI) push(ctx context.Context, dir string, args ...string) error {
 	bin := c.GitBin
 	if bin == "" {
 		bin = "git"
 	}
 	// Same credential plumbing as the clone: git needs a helper to use GH_TOKEN.
-	args := []string{"-C", dir}
+	full := []string{"-C", dir}
 	if c.Token != "" {
-		args = append(args,
+		full = append(full,
 			"-c", "credential.helper=",
 			"-c", "credential.https://github.com.helper=!gh auth git-credential")
 	}
-	args = append(args, "push", "--set-upstream", "origin", branch)
+	args = append(full, args...)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = c.env()
 	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git push %s: %s", branch, strings.TrimSpace(string(out)))
+		return fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 	}
 	return nil
 }
