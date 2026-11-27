@@ -31,6 +31,10 @@ const (
 	StateDone    = "done"
 	StateBlocked = "blocked"
 	StateSkipped = "skipped"
+	// StateAsking is a run that ended with a question on GitHub. It is not a
+	// failure: the branch, the draft pull request and the session are all kept,
+	// and the next human comment continues the same agent.
+	StateAsking = "asking"
 )
 
 // Options configure an Engine.
@@ -73,6 +77,11 @@ type StatusRow struct {
 	Workflow string `json:"workflow"`
 	State    string `json:"state"`
 	Detail   string `json:"detail"`
+	// Turns and CostUSD come from the conversation, so a long-running agent is
+	// visible as more than "a job".
+	Turns   int     `json:"turns,omitempty"`
+	CostUSD float64 `json:"cost_usd,omitempty"`
+	Session string  `json:"session,omitempty"`
 }
 
 // Engine runs workflows for one repo.
@@ -309,7 +318,7 @@ func (e *Engine) Tick(ctx context.Context) ([]Result, error) {
 			results = append(results, r)
 			continue
 		}
-		res := e.dispatch(ctx, sel, byIssue[sel.Event.Number], byPR[sel.Event.Number])
+		res := e.dispatch(ctx, sel, byIssue[sel.Event.Number], byPR[sel.Event.Number], nil)
 		results = append(results, res)
 		if res.State == StateBlocked && !e.opt.DryRun {
 			// One block per tick is enough: a storm of blocks buries the issue.
@@ -318,10 +327,17 @@ func (e *Engine) Tick(ctx context.Context) ([]Result, error) {
 		}
 	}
 
+	// Turns come after the trigger-driven work: an issue that was just picked up
+	// is not stuck behind a chat follow-up, and a follow-up is not stuck behind a
+	// ninety-minute build.
+	results = append(results, e.turnLoop(ctx)...)
 	results = append(results, e.respondLoop(ctx)...)
 	// A claim outliving its issue is how the status page ends up nagging about work
 	// that was merged or closed, so drop those before anything else looks at them.
 	e.pruneClosedClaims(ctx, issues, prs)
+	// A conversation whose target is done is history: archive it, so the audit
+	// trail keeps the turns and the cost and the live set keeps only what is real.
+	e.archiveClosedConversations(ctx, issues, prs)
 	e.cleanupMerged(ctx)
 	return results, nil
 }
@@ -345,6 +361,13 @@ func (e *Engine) suppressed(sel workflow.Selection) (Result, bool) {
 		base.State, base.Detail = StateSkipped, "already done"
 		return base, true
 	}
+	// A question is not a failure: the agent is waiting for a human on the issue
+	// thread, and the next human comment is what wakes it. Re-dispatching it here
+	// would ask the same question again on every tick.
+	if hasLabel(labels, e.prof.Issue.QuestionLabel) {
+		base.State, base.Detail = StateSkipped, "waiting for an answer on the issue"
+		return base, true
+	}
 	if e.opt.Force {
 		return Result{}, false
 	}
@@ -352,6 +375,18 @@ func (e *Engine) suppressed(sel workflow.Selection) (Result, bool) {
 	// The label was checked above, so reaching here with a blocked claim means a
 	// human removed the label and wants another attempt — which is exactly what the
 	// block comment promises.
+	// Labels mirror the conversation; where they disagree the label wins, because
+	// removing it is how a human says "carry on". A conversation still marked
+	// asking whose label is gone becomes workable again.
+	if conv, found := e.store.FindConversation(e.opt.Repo.Name, sel.Workflow.Name(), sel.Event.Number); found &&
+		conv.State == state.ConversationAsking {
+		e.logf("%s#%d: question label removed, continuing", sel.Workflow.Name(), sel.Event.Number)
+		conv.State = state.ConversationWorking
+		if err := e.store.SaveConversation(conv); err != nil {
+			e.logf("warning: could not save the conversation: %v", err)
+		}
+	}
+
 	claim, ok, err := e.store.LoadClaim(e.opt.Repo.Name, sel.Workflow.Name(), sel.Event.Number)
 	if err == nil && ok && claim.State == StateBlocked {
 		e.logf("%s#%d: blocked label removed, retrying (previous failure: %s)",
@@ -364,7 +399,11 @@ func (e *Engine) suppressed(sel workflow.Selection) (Result, bool) {
 }
 
 // dispatch runs one workflow for one event.
-func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue github.Issue, pr github.PR) Result {
+//
+// pending holds the human comments this run answers: empty for a fresh trigger,
+// non-empty for a turn on an existing conversation. Either way the run continues
+// the target's conversation, so the same agent keeps its history.
+func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue github.Issue, pr github.PR, pending []github.Comment) Result {
 	wf := sel.Workflow
 	perms := wf.Perms()
 	res := Result{Repo: e.opt.Repo.Name, Kind: string(sel.Event.Kind), Workflow: wf.Name(), Number: sel.Event.Number}
@@ -416,6 +455,23 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		return e.blocked(res, perms, err)
 	}
 
+	// The conversation is the identity of "this agent on this target". It is
+	// loaded first because the prompt needs to know which turn this is, and it is
+	// saved at the end (or on the way out) because the next tick reads it.
+	conv, convOK, err := e.store.LoadConversation(e.opt.Repo.Name, wf.Name(), sel.Event.Number)
+	if err != nil {
+		e.logf("warning: could not read the conversation for %s#%d: %v", wf.Name(), sel.Event.Number, err)
+	}
+	if !convOK {
+		conv = state.Conversation{
+			Repo: e.opt.Repo.Name, Workflow: wf.Name(), Number: sel.Event.Number,
+			SessionID: state.SessionIDFor(e.opt.Repo.Name, wf.Name(), sel.Event.Number, 0),
+			OpenedAt:  e.now(), State: state.ConversationWorking,
+		}
+	}
+	conv.Cwd, conv.Branch = workdir, branch
+	turn := conv.Turns + 1
+
 	job := workflow.Job{
 		Kind:       sel.Event.Kind,
 		Repo:       e.opt.Repo.Slug,
@@ -432,14 +488,13 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 			NeverRun:      e.prof.Protect.NeverRun,
 			SecretPaths:   e.prof.Protect.SecretPaths,
 		},
-		Notes:  e.prof.Prompt.Notes,
-		DryRun: e.opt.DryRun,
-		Resume: resume,
-	}
-
-	spec, err := wf.Prompt(job)
-	if err != nil {
-		return e.blocked(res, perms, err)
+		Notes:        e.prof.Prompt.Notes,
+		DryRun:       e.opt.DryRun,
+		Turn:         turn,
+		Conversation: conv.SessionID,
+		Comments:     turnComments(pending),
+		LastQuestion: conv.LastQuestion,
+		LastReview:   conv.LastReview,
 	}
 
 	// A review is per revision: the same head commit must not be reviewed on every
@@ -448,15 +503,17 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	// commit can be reviewed again by re-adding the trigger label. The claim-based
 	// guard stays for the other triggers (a requested review, a mention), which
 	// have no label to reset.
+	alreadyReviewed := convOK && conv.ReviewedSHA != "" && conv.ReviewedSHA == pr.HeadRefOID
+	if claim, ok, _ := e.store.LoadClaim(e.opt.Repo.Name, wf.Name(), sel.Event.Number); ok &&
+		claim.Detail == "reviewed:"+pr.HeadRefOID && claim.State == StateDone {
+		alreadyReviewed = true
+	}
 	if wf.Name() == "review" && sel.Event.Kind != workflow.PRLabel &&
-		pr.HeadRefOID != "" && !e.opt.Force {
-		if claim, ok, _ := e.store.LoadClaim(e.opt.Repo.Name, wf.Name(), sel.Event.Number); ok &&
-			claim.Detail == "reviewed:"+pr.HeadRefOID && claim.State == StateDone {
-			res.State = StateSkipped
-			res.Detail = "already reviewed " + pr.HeadRefOID[:7]
-			e.logf("skipping review#%d: already reviewed %s", res.Number, pr.HeadRefOID[:7])
-			return res
-		}
+		pr.HeadRefOID != "" && !e.opt.Force && len(pending) == 0 && alreadyReviewed {
+		res.State = StateSkipped
+		res.Detail = "already reviewed " + pr.HeadRefOID[:7]
+		e.logf("skipping review#%d: already reviewed %s (session %s)", res.Number, pr.HeadRefOID[:7], conv.SessionID)
+		return res
 	}
 
 	choice := e.choiceFor(labels, wf.Name())
@@ -465,6 +522,14 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		return e.blocked(res, perms, err)
 	}
 	caps := driver.Caps()
+	// A driver that can name a conversation gets the identity and resumes from
+	// there, with no "continue the latest session here" guesswork and no
+	// commit-summary stand-in. A driver that cannot keeps today's behaviour.
+	job.Resume = resume && !caps.Conversation
+	spec, err := wf.Prompt(job)
+	if err != nil {
+		return e.blocked(res, perms, err)
+	}
 	spec.Model, spec.Thinking = choice.Model, choice.Thinking
 	if !caps.Model {
 		spec.Model = ""
@@ -474,17 +539,22 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	}
 	spec.Workdir = workdir
 	spec.Timeout = time.Duration(e.opt.Agent.MaxRunMinutes) * time.Minute
-	spec.Continue = resume && caps.Resume
-	if resume && !caps.Resume {
-		if summary, serr := e.wts.CommitSummary(ctx, workdir, 10); serr == nil {
-			spec.Prompt += "\n\nWork already on this branch:\n" + summary + "\n"
+	if caps.Conversation {
+		spec.Conversation = conv.SessionID
+	} else {
+		spec.Continue = resume && caps.Resume
+		if resume && !caps.Resume {
+			if summary, serr := e.wts.CommitSummary(ctx, workdir, 10); serr == nil {
+				spec.Prompt += "\n\nWork already on this branch:\n" + summary + "\n"
+			}
 		}
 	}
 
 	if e.opt.DryRun {
 		res.State = StatePlanned
-		res.Detail = fmt.Sprintf("brain=%s model=%q thinking=%q branch=%s checks=%d prompt=%dB",
-			choice.Name, spec.Model, spec.Thinking, branch, len(checks.Select(e.prof, dryChanged(e.prof))), len(spec.Prompt))
+		res.Detail = fmt.Sprintf("brain=%s model=%q thinking=%q branch=%s turn=%d session=%s checks=%d prompt=%dB",
+			choice.Name, spec.Model, spec.Thinking, branch, turn, conv.SessionID,
+			len(checks.Select(e.prof, dryChanged(e.prof))), len(spec.Prompt))
 		e.logf("dry run %s#%d (%s): %s", wf.Name(), res.Number, sel.Event.Kind, res.Detail)
 		if e.opt.Verbose {
 			fmt.Fprintf(e.opt.Log, "----- prompt -----\n%s\n------------------\n", spec.Prompt)
@@ -498,7 +568,7 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 			return e.blocked(res, perms, err)
 		}
 	}
-	if perms.Comment {
+	if perms.Comment && turn == 1 && len(pending) == 0 {
 		_ = e.opt.GitHub.Comment(ctx, e.opt.Repo.Slug, sel.Event.Number, fmt.Sprintf(
 			"🤖 **%s** picked this up on `%s`.\n\nI'll report back here; the details go to the run log.", e.opt.Repo.Bot, branch))
 	}
@@ -532,7 +602,12 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	_ = logFile.Sync()
 
 	fail := func(reason string) Result {
-		return e.blocked(res, perms, errors.New(reason))
+		out := e.blocked(res, perms, errors.New(reason))
+		// The comments are marked answered even though the run failed: otherwise
+		// the same comment would start a failing turn on every tick. A human reply
+		// takes the next turn, which is the retry.
+		e.saveConversation(&conv, state.ConversationBlocked, pending, 0)
+		return out
 	}
 
 	if runErr != nil {
@@ -600,6 +675,14 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	if err != nil {
 		return fail(err.Error())
 	}
+	question, err := e.readQuestion(workdir)
+	if err != nil {
+		return fail(err.Error())
+	}
+	// Forget the artifacts once they are read. The worktree outlives the run, so a
+	// QUESTION.md left behind would be re-read by the next turn as if it were new —
+	// the same question again, every tick.
+	e.clearArtifacts(workdir)
 
 	var checkResults []checks.Result
 	selected := checks.Select(e.prof, changed)
@@ -636,10 +719,18 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		if perms.Write {
 			return fail("a review workflow must not claim Write")
 		}
+		if question != "" {
+			// Asking is not reviewing: a half-review with a question buried in it
+			// reads as a verdict, and a review cannot be edited. The question is
+			// posted by ask(), as a comment.
+			break
+		}
 		if err := e.postReview(ctx, res.Number, reviewBody, runRes.Summary, workdir, checkResults); err != nil {
 			return fail(err.Error())
 		}
 		detail = "review posted"
+		conv.ReviewedSHA = pr.HeadRefOID
+		conv.LastReview = clip(reviewBody, lastReviewLimit)
 		if pr.HeadRefOID != "" {
 			detail = "reviewed:" + pr.HeadRefOID
 		}
@@ -658,15 +749,34 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		}
 	}
 
+	// A failed check beats a question: a red branch with an open question reads as
+	// answerable, and the answer would arrive to a failing tree. One message says
+	// both, so the human sees why the run stopped and what it wanted to know.
 	if checks.Failed(checkResults) && wf.Name() != "review" {
-		return e.blockedWithDetail(res, perms, "checks failed (the PR records why):\n\n"+checks.Summary(checkResults))
+		msg := "checks failed (the PR records why):\n\n" + checks.Summary(checkResults)
+		if question != "" {
+			msg = "the agent stopped to ask:\n\n" + question + "\n\n" + msg
+		}
+		out := e.blockedWithDetail(res, perms, msg)
+		e.saveConversation(&conv, state.ConversationBlocked, pending, 0)
+		return out
 	}
+
+	if question != "" {
+		conv.LastQuestion = question
+		out := e.ask(ctx, res, perms, question, detail)
+		e.saveConversation(&conv, state.ConversationAsking, pending, runRes.CostUSD)
+		return out
+	}
+	// The question was answered by this run: it is no longer an open thread.
+	conv.LastQuestion = ""
 
 	if perms.Label {
 		e.finishLabels(ctx, wf.Name(), res.Number)
 	}
 	claim.State, claim.Detail = StateDone, detail
 	_ = e.store.SaveClaim(claim)
+	e.saveConversation(&conv, state.ConversationDone, pending, runRes.CostUSD)
 
 	res.State, res.Detail = StateDone, detail
 	return res
@@ -989,8 +1099,25 @@ func (e *Engine) readReview(dir string) (string, error) {
 	return readArtifact(filepath.Join(dir, prompts.ReviewFile))
 }
 
+// readQuestion is the agent asking, rather than failing: the run is over and the
+// conversation stays open, waiting for a human.
+func (e *Engine) readQuestion(dir string) (string, error) {
+	return readArtifact(filepath.Join(dir, prompts.QuestionFile))
+}
+
 func (e *Engine) readBlocked(dir string) (string, error) {
 	return readArtifact(filepath.Join(dir, prompts.BlockedFile))
+}
+
+// clearArtifacts removes the run's channel back to the runner: everything here
+// was already read into memory, and the next turn must start from what it writes,
+// not from what an earlier turn left.
+func (e *Engine) clearArtifacts(dir string) {
+	for _, name := range []string{
+		prompts.SummaryFile, prompts.ReviewFile, prompts.BlockedFile, prompts.QuestionFile,
+	} {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
 }
 
 func readArtifact(path string) (string, error) {
@@ -1164,6 +1291,74 @@ func (e *Engine) pruneClosedClaims(ctx context.Context, openIssues []github.Issu
 	}
 }
 
+// archiveClosedConversations retires the conversations of merged or closed
+// targets. Discovery only lists open objects, so a conversation missing from those
+// sets is suspect — and a missing label looks the same — so only suspects cost the
+// confirming API call.
+func (e *Engine) archiveClosedConversations(ctx context.Context, openIssues []github.Issue, openPRs []github.PR) {
+	convs, err := e.store.Conversations(e.opt.Repo.Name)
+	if err != nil {
+		e.logf("warning: could not read conversations: %v", err)
+		return
+	}
+	if len(convs) == 0 {
+		return
+	}
+	open := map[string]bool{}
+	for _, is := range openIssues {
+		open["issue:"+strconv.Itoa(is.Number)] = true
+	}
+	for _, pr := range openPRs {
+		open["pr:"+strconv.Itoa(pr.Number)] = true
+	}
+	for _, c := range convs {
+		closed, prNumber := e.targetClosed(ctx, c, open)
+		if !closed {
+			continue
+		}
+		if err := e.store.ArchiveConversation(e.opt.Repo.Name, c.Workflow, c.Number); err != nil {
+			e.logf("warning: could not archive %s#%d: %v", c.Workflow, c.Number, err)
+			continue
+		}
+		e.logf("archived %s#%d: the %s is %s", c.Workflow, c.Number,
+			map[bool]string{true: "pull request", false: "issue"}[prNumber > 0],
+			map[bool]string{true: "merged or closed", false: "closed"}[prNumber > 0])
+	}
+}
+
+// targetClosed decides whether a conversation's target is finished: the pull
+// request for a review, the issue for an implementation — and, for an
+// implementation, the pull request its branch produced, which is how "merged"
+// reaches an issue that a human has not closed yet.
+func (e *Engine) targetClosed(ctx context.Context, c state.Conversation, open map[string]bool) (bool, int) {
+	if c.Workflow == "review" {
+		if open["pr:"+strconv.Itoa(c.Number)] {
+			return false, 0
+		}
+		pr, err := e.opt.GitHub.GetPR(ctx, e.opt.Repo.Slug, c.Number)
+		if err != nil {
+			return false, 0
+		}
+		return strings.EqualFold(pr.State, "MERGED") || strings.EqualFold(pr.State, "CLOSED"), c.Number
+	}
+
+	if !open["issue:"+strconv.Itoa(c.Number)] {
+		if is, err := e.opt.GitHub.GetIssue(ctx, e.opt.Repo.Slug, c.Number); err == nil &&
+			strings.EqualFold(is.State, "CLOSED") {
+			return true, 0
+		}
+	}
+	if c.Branch == "" {
+		return false, 0
+	}
+	pr, found, err := e.opt.GitHub.FindPRByHead(ctx, e.opt.Repo.Slug, c.Branch)
+	if err != nil || !found {
+		return false, 0
+	}
+	merged := strings.EqualFold(pr.State, "MERGED") || strings.EqualFold(pr.State, "CLOSED")
+	return merged, pr.Number
+}
+
 // cleanupMerged removes worktrees whose PR is merged.
 func (e *Engine) cleanupMerged(ctx context.Context) {
 	removed, err := e.wts.Cleanup(ctx, func(branch string) bool {
@@ -1194,6 +1389,15 @@ func (e *Engine) Status(ctx context.Context) ([]StatusRow, error) {
 	}
 	_ = prs
 
+	convs, err := e.store.Conversations(e.opt.Repo.Name)
+	if err != nil {
+		e.logf("warning: could not read conversations: %v", err)
+	}
+	byTarget := map[string]state.Conversation{}
+	for _, c := range convs {
+		byTarget[statusKey(c.Workflow, c.Number)] = c
+	}
+
 	var rows []StatusRow
 	for _, sel := range workflow.Plan(events, e.enabled(), e.labelDefaults()) {
 		row := StatusRow{Repo: e.opt.Repo.Name, Kind: string(sel.Event.Kind),
@@ -1202,6 +1406,13 @@ func (e *Engine) Status(ctx context.Context) ([]StatusRow, error) {
 		if r, ok := e.suppressed(sel); ok {
 			row.State, row.Detail = r.State, r.Detail
 		}
+		if conv, ok := byTarget[statusKey(row.Workflow, row.Number)]; ok {
+			row.Turns, row.CostUSD, row.Session = conv.Turns, conv.CostUSD, conv.SessionID
+			if conv.State == state.ConversationAsking {
+				// "Skipped" is the tick's view; the conversation is the truthful one.
+				row.State, row.Detail = StateAsking, conversationDetail(conv)
+			}
+		}
 		rows = append(rows, row)
 	}
 	claims, err := e.store.Claims(e.opt.Repo.Name)
@@ -1209,19 +1420,53 @@ func (e *Engine) Status(ctx context.Context) ([]StatusRow, error) {
 		return nil, err
 	}
 	for _, c := range claims {
-		covered := false
-		for _, row := range rows {
-			if row.Number == c.Number && row.Workflow == c.Workflow {
-				covered = true
-			}
-		}
-		if covered {
+		if coveredStatus(rows, c.Workflow, c.Number) {
 			continue
 		}
-		rows = append(rows, StatusRow{Repo: e.opt.Repo.Name, Kind: c.Kind, Number: c.Number,
-			Workflow: c.Workflow, State: c.State, Detail: c.Detail})
+		row := StatusRow{Repo: e.opt.Repo.Name, Kind: c.Kind, Number: c.Number,
+			Workflow: c.Workflow, State: c.State, Detail: c.Detail}
+		if conv, ok := byTarget[statusKey(c.Workflow, c.Number)]; ok {
+			row.Turns, row.CostUSD, row.Session = conv.Turns, conv.CostUSD, conv.SessionID
+		}
+		rows = append(rows, row)
+	}
+	// A conversation with no claim and no pending event is still a thing a human
+	// wants to see: an agent waiting on an answer, or one that finished a turn.
+	for _, c := range convs {
+		if coveredStatus(rows, c.Workflow, c.Number) {
+			continue
+		}
+		rows = append(rows, StatusRow{Repo: e.opt.Repo.Name, Kind: string(turnKind(c)),
+			Number: c.Number, Workflow: c.Workflow, State: c.State,
+			Detail: conversationDetail(c), Turns: c.Turns, CostUSD: c.CostUSD, Session: c.SessionID})
 	}
 	return rows, nil
+}
+
+func statusKey(workflow string, number int) string {
+	return workflow + "#" + strconv.Itoa(number)
+}
+
+func coveredStatus(rows []StatusRow, workflow string, number int) bool {
+	for _, row := range rows {
+		if row.Number == number && row.Workflow == workflow {
+			return true
+		}
+	}
+	return false
+}
+
+// conversationDetail is the one-line summary of a conversation for `status` and
+// for a row that has no claim behind it.
+func conversationDetail(c state.Conversation) string {
+	detail := fmt.Sprintf("turn %d", c.Turns)
+	if c.CostUSD > 0 {
+		detail += fmt.Sprintf(", $%.2f", c.CostUSD)
+	}
+	if c.LastQuestion != "" && c.State == state.ConversationAsking {
+		detail += " — asked: " + firstLine(c.LastQuestion)
+	}
+	return detail
 }
 
 // RunIssue runs one workflow for one issue, by hand.
@@ -1274,7 +1519,7 @@ func (e *Engine) runOne(ctx context.Context, number int, name string, _ workflow
 	if err != nil {
 		return Result{}, err
 	}
-	return e.dispatch(ctx, sel, issue, pr), nil
+	return e.dispatch(ctx, sel, issue, pr, nil), nil
 }
 
 func (e *Engine) pickWorkflow(name, fallback string) (workflow.Workflow, error) {

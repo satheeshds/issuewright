@@ -45,6 +45,13 @@ func (e *Engine) findCommentWork(ctx context.Context) ([]commentJob, error) {
 		if !e.touchedPR(pr) {
 			continue
 		}
+		// The agent that wrote this branch answers its own pull request, with its
+		// history and its own decisions. respond stays the fallback for pull
+		// requests that predate conversations, or whose author was a human.
+		if conv, ok := e.store.ConversationByBranch(e.opt.Repo.Name, pr.HeadRef); ok {
+			e.logf("respond: leaving #%d to its author conversation (%s)", pr.Number, conv.SessionID)
+			continue
+		}
 		threads, conversation, err := e.opt.GitHub.ListCommentThreads(ctx, e.opt.Repo.Slug, pr.Number)
 		if err != nil {
 			e.logf("warning: comments of #%d: %v", pr.Number, err)
