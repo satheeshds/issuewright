@@ -20,6 +20,11 @@ const (
 	SummaryFile = "SUMMARY.md"
 	BlockedFile = "BLOCKED.md"
 	ReviewFile  = "REVIEW.md"
+	// QuestionFile is the non-terminal sibling of BlockedFile: the agent has done
+	// everything it is sure about and needs an answer to carry on. The runner posts
+	// it as a comment, marks the conversation "asking", and waits for a human
+	// instead of failing the run.
+	QuestionFile = "QUESTION.md"
 )
 
 // Inputs is everything a template may interpolate.
@@ -42,10 +47,20 @@ type Inputs struct {
 	SecretPaths   []string
 	Notes         []string
 
-	// Comments are the review comments this run answers (respond workflow).
+	// Comments are the comments this run answers (respond, or a conversation's
+	// next turn).
 	Comments []JobComment
 	// OwnBranch means the branch belongs to this runner, so a fix may be pushed.
 	OwnBranch bool
+	// Turn is which turn of the conversation this run is: 1 is the first, a
+	// number above 1 means the agent has history to continue from.
+	Turn int
+	// LastReview is the review this same conversation produced for an earlier
+	// revision of the pull request (review conversations only).
+	LastReview string
+	// LastQuestion is what this agent asked before it stopped, when the turn being
+	// built is the answer to it.
+	LastQuestion string
 }
 
 // JobComment is one comment a respond run is answering.
@@ -105,8 +120,11 @@ func interpolate(tmpl string, in Inputs) string {
 		"{{SUMMARY_FILE}}", SummaryFile,
 		"{{BLOCKED_FILE}}", BlockedFile,
 		"{{REVIEW_FILE}}", ReviewFile,
+		"{{QUESTION_FILE}}", QuestionFile,
 		"{{COMMENTS}}", renderComments(in.Comments),
 		"{{OWN_BRANCH}}", ownBranchNote(in.OwnBranch),
+		"{{CONVERSATION_NOTE}}", conversationNote(in.Turn, in.LastQuestion),
+		"{{LAST_REVIEW}}", lastReview(in.LastReview),
 	)
 	return r.Replace(tmpl)
 }
@@ -129,6 +147,34 @@ func renderComments(comments []JobComment) string {
 			c.ID, c.Author, where, strings.TrimSpace(c.Body))
 	}
 	return b.String()
+}
+
+// conversationNote tells the model where it is in a conversation that outlives
+// this process. A first turn says so; a later turn says the history is real and
+// must not be re-derived.
+func conversationNote(turn int, lastQuestion string) string {
+	var b strings.Builder
+	if turn <= 1 {
+		b.WriteString("This is the first turn on this target. Read it carefully and decide what \"done\" means.")
+	} else {
+		b.WriteString("This is turn " + fmt.Sprint(turn) + " on this target, and you are the same agent that took the " +
+			"earlier turns: they are in your history, including what a human told you and why you chose what you did. " +
+			"Continue from them. Do not re-derive settled decisions, do not redo finished work, and do not contradict " +
+			"an earlier turn without saying plainly that you changed your mind and why.")
+	}
+	if q := strings.TrimSpace(lastQuestion); q != "" {
+		b.WriteString("\n\nIn your last turn you stopped and asked:\n\n> " +
+			strings.ReplaceAll(q, "\n", "\n> ") +
+			"\n\nThe comment below is the answer to that question. Treat it as the decision, and carry on from it.")
+	}
+	return b.String()
+}
+
+func lastReview(review string) string {
+	if strings.TrimSpace(review) == "" {
+		return "(you have not reviewed this pull request before)"
+	}
+	return strings.TrimSpace(review)
 }
 
 func ownBranchNote(own bool) string {
