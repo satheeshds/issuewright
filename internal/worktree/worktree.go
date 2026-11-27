@@ -463,23 +463,33 @@ func (m *Manager) Cleanup(ctx context.Context, merged func(branch string) bool) 
 	return removed, nil
 }
 
-// DiffPaths renders the change to specific paths as a patch, including files that
-// are new (they are marked intent-to-add first, otherwise git ignores them).
-func (m *Manager) DiffPaths(ctx context.Context, dir string, paths []string) (string, error) {
+// DiffPaths renders the change to specific paths as a patch, relative to ref
+// (normally the base branch).
+//
+// Not HEAD: the change may already be committed on the branch — an earlier run can
+// have put it there — in which case `git diff HEAD` shows nothing and the proposal
+// would be empty.
+func (m *Manager) DiffPaths(ctx context.Context, dir, ref string, paths []string) (string, error) {
 	if len(paths) == 0 {
 		return "", nil
 	}
 	for _, p := range paths {
+		// New files are invisible to `git diff` until git knows about them.
 		_, _ = m.git(ctx, dir, "add", "-N", "--", p)
 	}
-	args := append([]string{"diff", "--no-color", "HEAD", "--"}, paths...)
+	args := append([]string{"diff", "--no-color", ref, "--"}, paths...)
 	return m.git(ctx, dir, args...)
 }
 
-// RevertPaths puts specific paths back to HEAD, deleting the ones that are new.
-func (m *Manager) RevertPaths(ctx context.Context, dir string, paths []string) error {
+// RevertPaths restores specific paths to a ref — normally the base branch — and
+// deletes the ones that ref does not have.
+//
+// Reverting to HEAD is not enough: the paths may already be committed on the branch
+// (an earlier run put them there), and the push is judged on the net tree change, so
+// the branch has to end up identical to the base in those paths.
+func (m *Manager) RevertPaths(ctx context.Context, dir, ref string, paths []string) error {
 	for _, p := range paths {
-		if _, err := m.git(ctx, dir, "checkout", "HEAD", "--", p); err != nil {
+		if _, err := m.git(ctx, dir, "checkout", ref, "--", p); err != nil {
 			// Not in HEAD: a file the run created. Drop it from the index and disk.
 			_, _ = m.git(ctx, dir, "reset", "-q", "--", p)
 			if rmErr := os.Remove(filepath.Join(dir, p)); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
@@ -488,4 +498,22 @@ func (m *Manager) RevertPaths(ctx context.Context, dir string, paths []string) e
 		}
 	}
 	return nil
+}
+
+// CommitPaths commits just the given paths, so a revert does not sweep up unrelated
+// work that happens to be uncommitted.
+func (m *Manager) CommitPaths(ctx context.Context, dir, message string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	for _, p := range paths {
+		// A path this branch created and we just deleted has no pathspec to match;
+		// staging the deletion of a tracked one does. Either way, keep going.
+		_, _ = m.git(ctx, dir, "add", "-A", "--", p)
+	}
+	if err := exec.CommandContext(ctx, m.opt.GitBin, "-C", dir, "diff", "--cached", "--quiet").Run(); err == nil {
+		return nil // nothing staged: the revert was already the base content
+	}
+	_, err := m.git(ctx, dir, "commit", "-m", message)
+	return err
 }

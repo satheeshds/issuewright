@@ -567,12 +567,18 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 		// worktree back, and hand the patch to the human in the PR body. This is the
 		// only way a bot can propose a CI change when it may not push workflows.
 		if proposed := checks.Filter(e.prof.Protect.ProposeOnly, changed); len(proposed) > 0 {
-			patch, perr := e.wts.DiffPaths(ctx, workdir, proposed)
+			patch, perr := e.wts.DiffPaths(ctx, workdir, "origin/"+e.prof.BaseBranch, proposed)
 			if perr != nil {
 				return fail(fmt.Sprintf("read the proposed patch: %v", perr))
 			}
-			if err := e.wts.RevertPaths(ctx, workdir, proposed); err != nil {
+			// Restore them to the *base*, not to HEAD: an earlier run may have
+			// committed them already, and the push is judged on the net change.
+			if err := e.wts.RevertPaths(ctx, workdir, "origin/"+e.prof.BaseBranch, proposed); err != nil {
 				return fail(fmt.Sprintf("put back propose-only paths: %v", err))
+			}
+			if err := e.wts.CommitPaths(ctx, workdir,
+				"chore: propose CI changes in the pull request body", proposed); err != nil {
+				return fail(fmt.Sprintf("commit the propose-only revert: %v", err))
 			}
 			proposedPatch = patch
 			e.logf("propose-only: %d path(s) kept as a patch, not pushed: %v", len(proposed), proposed)

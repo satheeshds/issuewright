@@ -1561,3 +1561,58 @@ func TestDenylistMessageNamesTheFailedGenerator(t *testing.T) {
 		t.Errorf("the failing check and its output should be quoted:\n%s", detail)
 	}
 }
+
+// The live case: the workflow change was already *committed* on the branch by an
+// earlier run, so reverting to HEAD did nothing and the push was rejected with
+// "refusing to allow a GitHub App to create or update workflow". The branch must end
+// up identical to the base in those paths, because the push is judged on the net
+// tree change.
+func TestProposeOnlyRevertsAlreadyCommittedWorkflow(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.ProposeOnly = []string{".github/workflows/**"}
+	h.addIssue(170, "bump the pin", "body")
+
+	// A run that commits the workflow change, exactly as an earlier attempt did.
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- bump\n",
+		script: "mkdir -p .github/workflows && printf 'flutter-version: 3.50.1\\n' > .github/workflows/mobile-apk.yml && " +
+			"git add -A && git commit -qm 'chore: pin flutter'"}
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+
+	// Net change against main must be empty for the proposed path…
+	diff := gitRun(t, h.cloneDir, "diff", "--name-only", "origin/main...agent/issue-170", "--", ".github/workflows")
+	if diff != "" {
+		t.Errorf("the branch still changes a workflow file: %q", diff)
+	}
+	// …and the proposal still reaches the human.
+	if body := h.gh.PRs[0].Body; !strings.Contains(body, "3.50.1") {
+		t.Errorf("the patch is missing from the PR body:\n%s", body)
+	}
+	if len(h.gh.Pushed) != 1 {
+		t.Errorf("push = %v", h.gh.Pushed)
+	}
+}
+
+// A workflow file that the branch *created* is removed entirely, not left as a
+// deletion in the diff (which would also count as touching it).
+func TestProposeOnlyDropsANewWorkflowFile(t *testing.T) {
+	h := newHarness(t)
+	h.profile.Protect.ProposeOnly = []string{".github/workflows/**"}
+	h.addIssue(171, "add a workflow", "body")
+	drv := &stubDriver{file: prompts.SummaryFile, content: "## What changed\n- new workflow\n",
+		script: "mkdir -p .github/workflows && printf 'name: ci\\n' > .github/workflows/new.yml && " +
+			"git add -A && git commit -qm 'ci: add a workflow'"}
+	e, logs := h.engine(t, drv)
+	if _, err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v\n%s", err, logs)
+	}
+	files := gitRun(t, h.cloneDir, "ls-tree", "-r", "--name-only", "agent/issue-171")
+	if strings.Contains(files, ".github/workflows/new.yml") {
+		t.Errorf("the new workflow file is still on the branch:\n%s", files)
+	}
+	if diff := gitRun(t, h.cloneDir, "diff", "--name-only", "origin/main...agent/issue-171", "--", ".github/workflows"); diff != "" {
+		t.Errorf("the branch still differs in workflows: %q", diff)
+	}
+}
