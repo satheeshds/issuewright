@@ -91,6 +91,20 @@
   {{end}}
   {{end}}
 
+  {{if .Waiting}}
+  <h2>Waiting for an answer</h2>
+  {{range .Waiting}}
+  <div class="row">
+    <span class="state-running">? {{.Workflow}} #{{.Number}}</span>
+    <span class="tag">{{.Kind}}</span>
+    {{if .Turns}}<span class="tag">turn {{.Turns}}</span>{{end}}
+    <a href="{{.Link}}">answer on GitHub</a>
+    {{if .LabelName}}<div><span class="label"><b>{{.LabelName}}</b> — {{.LabelDo}}</span></div>{{end}}
+    {{if .Detail}}<div class="detail">{{.Detail}}</div>{{end}}
+  </div>
+  {{end}}
+  {{end}}
+
   {{if .Blocked}}
   <h2>Stuck</h2>
   {{range .Blocked}}
@@ -98,6 +112,7 @@
     <span class="state-blocked">■ {{.Workflow}} #{{.Number}}</span>
     <span class="tag">{{.Kind}}</span>
     {{if .Attempt}}<span class="tag">attempt {{.Attempt}}</span>{{end}}
+    {{if .Turns}}<span class="tag">turn {{.Turns}}</span>{{end}}
     <a href="{{.Link}}">open on GitHub</a>
     {{if .LogName}}<a href="/api/log/{{.LogName}}?repo={{$repo.Name}}&raw=1">run log</a>{{end}}
     {{if .LabelName}}<div><span class="label"><b>{{.LabelName}}</b> — {{.LabelDo}}</span></div>{{end}}
@@ -113,6 +128,7 @@
   <div class="row">
     <span class="state-done">✔ {{.Workflow}} #{{.Number}}</span>
     <span class="tag">{{since .Started}} ago</span>
+    {{if .Turns}}<span class="tag">turn {{.Turns}}</span>{{end}}
     <a href="{{.Link}}">open</a>
     {{if .Detail}}<div class="detail ok">{{.Detail}}</div>{{end}}
   </div>
@@ -146,7 +162,7 @@
 
 <div class="meta">
   Labels are the only switch: <span class="label">remove <b>agent:blocked</b></span> retries,
-  <span class="label">add <b>review:go</b></span> re-reviews.
+  <span class="label">answer a question</span> in a comment, <span class="label">add <b>review:go</b></span> re-reviews.
 </div>
 </body>
 </html>
