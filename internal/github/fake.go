@@ -26,6 +26,12 @@ type Fake struct {
 	// Threads and Conversation are what the fake reports for a PR's comments.
 	Threads      map[int][]CommentThread
 	Conversation map[int][]Comment
+	// IssueComments is what the fake reports for ListComments, on issues and pull
+	// requests alike (GitHub serves both from the issues endpoint).
+	IssueComments map[int][]Comment
+	// ReviewStates reports a PR's most recent human review state by number, e.g.
+	// "CHANGES_REQUESTED". Empty means no review yet.
+	ReviewStates map[int]string
 	Replies      []FakeReply
 	Reactions    []string
 	// ResolvedThreads records thread ids the runner resolved.
@@ -49,6 +55,8 @@ func NewFake() *Fake {
 		Assignees:      map[int][]string{},
 		Threads:        map[int][]CommentThread{},
 		Conversation:   map[int][]Comment{},
+		IssueComments:  map[int][]Comment{},
+		ReviewStates:   map[int]string{},
 	}
 }
 
@@ -179,6 +187,19 @@ func (f *Fake) ListCommentThreads(_ context.Context, slug string, pr int) ([]Com
 		return nil, nil, err
 	}
 	return f.Threads[pr], f.Conversation[pr], nil
+}
+
+func (f *Fake) ListComments(_ context.Context, slug string, number, afterID int) ([]Comment, error) {
+	if err := f.record("list-issue-comments %s#%d after=%d", slug, number, afterID); err != nil {
+		return nil, err
+	}
+	var out []Comment
+	for _, c := range f.IssueComments[number] {
+		if c.ID > afterID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (f *Fake) ReplyToComment(_ context.Context, _ string, pr int, to Comment, body string) error {

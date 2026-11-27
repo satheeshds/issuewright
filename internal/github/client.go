@@ -52,6 +52,9 @@ type Client interface {
 	ListPRsWithLabel(ctx context.Context, slug, label string) ([]PR, error)
 	ListOpenPRs(ctx context.Context, slug string) ([]PR, error)
 	ListCommentThreads(ctx context.Context, slug string, pr int) ([]CommentThread, []Comment, error)
+	// ListComments returns the conversation comments on an issue or PR newer than
+	// afterID: the turns a human has taken since the agent last spoke.
+	ListComments(ctx context.Context, slug string, number, afterID int) ([]Comment, error)
 	ReplyToComment(ctx context.Context, slug string, pr int, to Comment, body string) error
 	ReactToComment(ctx context.Context, slug string, pr int, to Comment, content string) error
 	ResolveThread(ctx context.Context, threadID string) error
