@@ -83,12 +83,54 @@ Rather than pay for turn-level durability (a durable-execution library, a Node
 service, an experimental API), the checkpoint is coarse and free:
 
 - the branch and worktree persist;
-- `pi -c` resumes the session that was interrupted;
+- the issue's session persists, and is named rather than guessed (`pi
+  --session-id iw-<repo>-implement-<n>`);
 - the tick is idempotent, so a killed run is one tick from progress;
 - a failure is preserved as a commit, labelled, and unassigned.
 
 The trade: a run killed mid-turn may repeat some work. For issue-sized jobs that
 is cheaper than the alternative.
+
+### One agent per issue, one per pull request
+
+The first version threw the agent away with the process. Every tick was a fresh
+model reading the issue from zero, and a reviewer that had already reviewed the
+pull request could not say so. That is a bad collaborator: it re-derives, it
+contradicts itself, and its earlier reasoning is not evidence for anything.
+
+So a job has an **identity**: `<state>/<repo>/conversations/<workflow>-<n>.json`
+holds the session id, the branch, the turns, the cost, the question it asked, the
+comments it has answered, and (for a review) what it said last time. The state
+file is small, greppable and deletable, like the claims next to it.
+
+Three consequences, each deliberate:
+
+- **A question is a turn, not a failure.** `QUESTION.md` is the non-terminal
+  sibling of `BLOCKED.md`: the work is kept, a draft pull request opens, and the
+  conversation waits under `agent:question` until a human answers. The alternative
+  — blocking, which unassigns and stops — makes the bot ask once and give up,
+  which is not how a colleague works.
+- **The comment cursor is the exactly-once boundary.** A comment id is answered
+  once, ever. That is why `requestId`-style idempotency was not worth a service:
+  the same guarantee falls out of the cursor, keyed by the same id.
+- **The reviewer keeps its review, but reviews the new revision cold.** Same
+  session, so it remembers its own findings and must report fixed / still open /
+  withdrawn; but every turn reads `base...HEAD` of *this* revision, so it cannot
+  defend an earlier finding the diff has already answered. Memory without
+  anchoring.
+
+What is still refused: a background process, a queue, a scheduler. A turn is
+still one blocking process inside one tick, and the labels still say what is
+happening.
+
+### pi-durable is a driver, not a foundation
+
+The conversation layer needs a session, which `pi --session-id` already gives.
+pi-durable would add turn-level checkpoints, queued input and `requestId`
+submissions — real, but not needed to talk to a human on GitHub, and it is a
+library (Node) rather than a program, so adopting it means writing the harness
+`pi` already is. It stays an opt-in driver behind `Caps.Conversation`
+(`docs/brains.md`), and the durability boundary stays the issue.
 
 ### A timer, not a CI runner
 
