@@ -123,6 +123,29 @@ What is still refused: a background process, a queue, a scheduler. A turn is
 still one blocking process inside one tick, and the labels still say what is
 happening.
 
+### A claim is a promise, and a promise is checkable
+
+The bot speaks to a human, so everything it says is a commitment: "fixed in
+b9ba799" tells the reader to stop looking. One live run made that commitment
+false — the agent committed the fix inside a detached review worktree, the push
+had nothing left to commit and was skipped, the reply had already gone out, and
+the next tick deleted the worktree. The commit survived only as an unreachable
+object.
+
+Three rules came out of it, and each is enforced rather than asked for:
+
+- **publish, then speak** — commits and pushes happen before any comment; a reply
+  saying "done" cannot arrive before the branch is done;
+- **verify the claim** — every commit id in a reply or report must resolve and be
+  in the branch's history, or the run blocks and says which id it could not back
+  up;
+- **never delete unpublished work** — a worktree survives unless its PR is
+  finished, its tree is clean and its commits are on the remote, and a review
+  worktree holding a local commit refuses to be reset.
+
+This is the same principle as the denylist and `never_run`: the interesting
+failures are the ones where the tool believes itself.
+
 ### pi-durable is a driver, not a foundation
 
 The conversation layer needs a session, which `pi --session-id` already gives.

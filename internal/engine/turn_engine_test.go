@@ -448,8 +448,24 @@ func TestAuthorConversationAnswersItsOwnPR(t *testing.T) {
 	tick := h.ticker(t, e, logs)
 	results := tick()
 
-	if len(h.gh.Replies) != 0 {
-		t.Errorf("respond answered a pull request that has an author: %+v", h.gh.Replies)
+	// The author answers, in the thread, and only after the branch was pushed.
+	if len(h.gh.Replies) != 1 || h.gh.Replies[0].To != 700 {
+		t.Fatalf("replies = %+v, want one answer to comment 700", h.gh.Replies)
+	}
+	if !strings.Contains(h.gh.Replies[0].Body, "fixed the loop") {
+		t.Errorf("the reply should be the agent's own words: %q", h.gh.Replies[0].Body)
+	}
+	pushAt, replyAt := -1, -1
+	for i, c := range h.gh.Calls {
+		switch {
+		case strings.HasPrefix(c, "push "):
+			pushAt = i
+		case strings.HasPrefix(c, "reply 31 -> 700"):
+			replyAt = i
+		}
+	}
+	if pushAt < 0 || replyAt < 0 || pushAt > replyAt {
+		t.Errorf("the reply must follow the push: push@%d reply@%d in %v", pushAt, replyAt, h.gh.Calls)
 	}
 	if len(drv.calls) != 1 {
 		t.Fatalf("runs = %d, want one author turn", len(drv.calls))
@@ -462,6 +478,9 @@ func TestAuthorConversationAnswersItsOwnPR(t *testing.T) {
 	}
 	var author bool
 	for _, r := range results {
+		if r.Workflow == "respond" {
+			t.Errorf("respond ran for a pull request that has an author: %+v", r)
+		}
 		if r.Workflow == "implement" && r.State == StateDone {
 			author = true
 		}

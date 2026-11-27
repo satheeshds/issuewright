@@ -302,6 +302,42 @@ func turnComments(pending []github.Comment) []workflow.JobComment {
 	return out
 }
 
+// turnReplyBody is what the agent says back on the comments that started the turn:
+// its own final words, or the report's opening if it left none. Short on purpose —
+// the detail is in the pull request and the run log.
+func turnReplyBody(brainSummary, summary string) string {
+	if body := strings.TrimSpace(brainSummary); body != "" {
+		return clip(body, 2000)
+	}
+	if body := firstLines(summary, 8); body != "" {
+		return body
+	}
+	return "Done — the change is on the pull request."
+}
+
+// turnReplyTargets is one comment per thread: the newest in each. Four comments on
+// one file are one conversation, and answering each of them separately is how a bot
+// becomes noise.
+func turnReplyTargets(pending []github.Comment) []github.Comment {
+	var order []string
+	byKey := map[string]github.Comment{}
+	for _, c := range pending {
+		key := "conversation"
+		if c.IsReview {
+			key = "review:" + c.Path
+		}
+		if _, ok := byKey[key]; !ok {
+			order = append(order, key)
+		}
+		byKey[key] = c // the slice is oldest-first, so the last wins
+	}
+	out := make([]github.Comment, 0, len(order))
+	for _, k := range order {
+		out = append(out, byKey[k])
+	}
+	return out
+}
+
 // lastReviewLimit caps the review remembered in the conversation file. The point
 // is the reviewer's own findings, not a transcript: a few kilobytes is plenty, and
 // the state file stays readable.

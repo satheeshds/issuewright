@@ -378,6 +378,23 @@ human comment ──▶ 👀 reaction ──▶ one run per PR ──▶ replies
 - **Fixes only on its own branch.** If a comment asks for a change and the branch
   starts with `branch_prefix`, the run commits and pushes. On a human's branch it
   never pushes: the patch is posted as a `diff` block for them to apply.
+- **Publishes before it speaks.** The commit and the push happen *before* a single
+  reply is posted, and the push sends the worktree's `HEAD` to the branch by
+  refspec. Both halves were learned from a live incident: an agent committed a fix
+  itself, the runner had nothing left to commit, the push was skipped — and the
+  reply had already told the human "fixed in b9ba799" for a commit that was on no
+  remote.
+- **A claimed commit has to exist.** Any reply (and the implementation's report)
+  that names a commit is checked against the worktree: it must resolve *and* be in
+  the branch's history. A run that names `b9ba799` when no such commit exists is
+  blocked with exactly that sentence, instead of posting a claim a human cannot
+  check. Citations are not claims: `…/commit/abc1234`, `owner/repo@abc1234` and
+  `sha256:abc1234` are ignored.
+- **Nothing unpublished is deleted.** A worktree is only removed when its PR is
+  merged or closed, the tree is clean, and its commits are on the remote — a commit
+  made in a review worktree is on no remote, so the worktree is kept and logged
+  (`kept worktree …: commits not on any remote`). Such a worktree also refuses to be
+  reset for the next review, naming the commit so it can be recovered.
 - **Resolves its own threads** once answered, never a thread a human opened.
 - A reply naming a comment id the run was not given is dropped, not guessed — an
   answer in the wrong thread is worse than no answer.

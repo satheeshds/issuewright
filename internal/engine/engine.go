@@ -679,6 +679,13 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	if err != nil {
 		return fail(err.Error())
 	}
+	// A report is a claim, and "Fixed in <sha>" is a claim a human will act on. Check
+	// it before it becomes the pull request body.
+	if wf.Name() != "review" {
+		if err := e.verifyClaims(ctx, workdir, summary); err != nil {
+			return fail(err.Error())
+		}
+	}
 	// Forget the artifacts once they are read. The worktree outlives the run, so a
 	// QUESTION.md left behind would be re-read by the next turn as if it were new —
 	// the same question again, every tick.
@@ -770,6 +777,26 @@ func (e *Engine) dispatch(ctx context.Context, sel workflow.Selection, issue git
 	}
 	// The question was answered by this run: it is no longer an open thread.
 	conv.LastQuestion = ""
+
+	// Answer the comments this turn was started by, in their own threads. This is what
+	// makes the author agent a conversation rather than a silent PR edit — and it runs
+	// after the publish, because a reply saying "done" must arrive to a branch that is
+	// actually done.
+	if len(pending) > 0 && perms.Comment {
+		body := turnReplyBody(runRes.Summary, summary)
+		if err := e.verifyClaims(ctx, workdir, body); err != nil {
+			return fail(err.Error())
+		}
+		for _, c := range turnReplyTargets(pending) {
+			n := res.Number
+			if c.IsReview && pr.Number != 0 {
+				n = pr.Number // an inline comment is answered on the pull request
+			}
+			if err := e.opt.GitHub.ReplyToComment(ctx, e.opt.Repo.Slug, n, c, body); err != nil {
+				e.logf("warning: could not reply to comment %d: %v", c.ID, err)
+			}
+		}
+	}
 
 	if perms.Label {
 		e.finishLabels(ctx, wf.Name(), res.Number)
@@ -1360,21 +1387,63 @@ func (e *Engine) targetClosed(ctx context.Context, c state.Conversation, open ma
 }
 
 // cleanupMerged removes worktrees whose PR is merged.
+//
+// Removal is the caller's decision, and it is deliberately strict: a review
+// worktree is detached, so it has no branch to look up, and the worktree's HEAD
+// must be exactly the merged head — anything else is work that would be destroyed.
 func (e *Engine) cleanupMerged(ctx context.Context) {
-	removed, err := e.wts.Cleanup(ctx, func(branch string) bool {
-		pr, found, err := e.opt.GitHub.FindPRByHead(ctx, e.opt.Repo.Slug, branch)
+	res, err := e.wts.Cleanup(ctx, func(c worktree.Candidate) bool {
+		if n, ok := reviewWorktree(c.Name); ok {
+			pr, err := e.opt.GitHub.GetPR(ctx, e.opt.Repo.Slug, n)
+			if err != nil {
+				return false
+			}
+			if !strings.EqualFold(pr.State, "MERGED") && !strings.EqualFold(pr.State, "CLOSED") {
+				return false
+			}
+			// A commit made in a review worktree (an agent that fixes a comment) is
+			// not on the branch, so a differing head is unpublished work.
+			return pr.HeadRefOID == "" || pr.HeadRefOID == c.Head
+		}
+		if c.Branch == "" {
+			return false // an unknown detached worktree: never guess
+		}
+		pr, found, err := e.opt.GitHub.FindPRByHead(ctx, e.opt.Repo.Slug, c.Branch)
 		if err != nil || !found {
 			return false
 		}
-		return strings.EqualFold(pr.State, "MERGED")
+		if !strings.EqualFold(pr.State, "MERGED") && !strings.EqualFold(pr.State, "CLOSED") {
+			return false
+		}
+		return pr.HeadRefOID == "" || pr.HeadRefOID == c.Head
 	})
 	if err != nil {
 		e.logf("warning: cleanup: %v", err)
 		return
 	}
-	for _, path := range removed {
-		e.logf("removed merged worktree %s", path)
+	for _, path := range res.Removed {
+		e.logf("removed finished worktree %s", path)
 	}
+	for _, kept := range res.Kept {
+		// Worth saying: a worktree that is kept forever is a leak, and one kept with
+		// work in it is something a human should look at.
+		if kept.Reason != "not finished" {
+			e.logf("kept worktree %s: %s", kept.Path, kept.Reason)
+		}
+	}
+}
+
+// reviewWorktree reads the pull request number out of a `review-<n>` directory.
+func reviewWorktree(name string) (int, bool) {
+	rest, ok := strings.CutPrefix(name, "review-")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // Status reports what is pending, in flight, and blocked.
