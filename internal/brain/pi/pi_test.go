@@ -79,6 +79,35 @@ func TestRunContinueAddsResumeFlag(t *testing.T) {
 	}
 }
 
+func TestRunPassesTheNamedConversation(t *testing.T) {
+	d, argsFile := fakePi(t, "exit 0\n")
+	if _, err := d.Run(context.Background(), brain.Spec{
+		Prompt: "second turn", Workdir: t.TempDir(), Continue: true,
+		Conversation: "iw-demo-implement-12",
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	args := readLines(t, argsFile)
+	if !contains(args, "--session-id") || !contains(args, "iw-demo-implement-12") {
+		t.Errorf("--session-id not passed: %v", args)
+	}
+	if contains(args, "-c") {
+		t.Errorf("-c must not be passed when a conversation is named: %v", args)
+	}
+}
+
+func TestRunWithoutAConversationFallsBackToContinue(t *testing.T) {
+	d, argsFile := fakePi(t, "exit 0\n")
+	if _, err := d.Run(context.Background(), brain.Spec{
+		Prompt: "continue", Workdir: t.TempDir(), Continue: true,
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if contains(readLines(t, argsFile), "--session-id") {
+		t.Error("--session-id must not be passed without a conversation id")
+	}
+}
+
 func TestRunNonZeroExitIsAnError(t *testing.T) {
 	d, _ := fakePi(t, `echo '{"type":"error","errorMessage":"model refused"}'
 echo "boom" >&2
@@ -112,7 +141,7 @@ func TestRunTimeoutKillsTheAgent(t *testing.T) {
 
 func TestCapsAllowResumeAndModel(t *testing.T) {
 	c := New().Caps()
-	if !c.Resume || !c.Model || !c.Thinking || !c.Streaming {
+	if !c.Resume || !c.Conversation || !c.Model || !c.Thinking || !c.Streaming {
 		t.Errorf("caps = %+v", c)
 	}
 }

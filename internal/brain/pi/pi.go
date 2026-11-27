@@ -38,9 +38,12 @@ func init() { brain.Register(New()) }
 // Name implements brain.Driver.
 func (d *Driver) Name() string { return "pi" }
 
-// Caps implements brain.Driver. Pi exposes all four capabilities.
+// Caps implements brain.Driver. Pi exposes all four capabilities, and it can name
+// a conversation: `--session-id <id>` opens the directory's session with that id,
+// creating it when it does not exist yet. That is what lets one issue keep one
+// agent across ticks.
 func (d *Driver) Caps() brain.Caps {
-	return brain.Caps{Resume: true, Model: true, Thinking: true, Streaming: true}
+	return brain.Caps{Resume: true, Conversation: true, Model: true, Thinking: true, Streaming: true}
 }
 
 // Run implements brain.Driver.
@@ -56,7 +59,11 @@ func (d *Driver) Run(ctx context.Context, spec brain.Spec, log io.Writer) (brain
 	if spec.Thinking != "" {
 		args = append(args, "--thinking", spec.Thinking)
 	}
-	if spec.Continue {
+	// A named conversation beats "the latest session here": it survives a
+	// second worktree, a fork, and a human opening pi in the same directory.
+	if spec.Conversation != "" {
+		args = append(args, "--session-id", spec.Conversation)
+	} else if spec.Continue {
 		args = append(args, "-c")
 	}
 	args = append(args, d.ExtraArgs...)
