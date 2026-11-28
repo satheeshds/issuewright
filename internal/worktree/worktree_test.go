@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -249,20 +250,108 @@ func TestCleanupRemovesOnlyMergedWorktrees(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	removed, err := m.Cleanup(ctx, func(branch string) bool {
-		return branch == "agent/issue-2"
+	// A merged PR implies a pushed branch: Cleanup refuses to remove the only copy.
+	for _, br := range []string{"agent/issue-1", "agent/issue-2"} {
+		runIn(t, m.CloneDir(), "push", "-q", "origin", br)
+	}
+	removed, err := m.Cleanup(ctx, func(c Candidate) bool {
+		return c.Branch == "agent/issue-2"
 	})
 	if err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
-	if len(removed) != 1 || removed[0] != drop {
-		t.Fatalf("removed = %v (want %s)", removed, drop)
+	if len(removed.Removed) != 1 || removed.Removed[0] != drop {
+		t.Fatalf("removed = %v (want %s)", removed.Removed, drop)
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("unmerged worktree was removed: %v", err)
 	}
 	if _, err := os.Stat(drop); !os.IsNotExist(err) {
 		t.Errorf("merged worktree still present: %v", err)
+	}
+}
+
+// The incident that produced this test: an agent committed a fix in a detached
+// review worktree, the push pushed nothing, and cleanup deleted the directory on
+// the next tick, leaving the commit as an unreachable object.
+func TestCleanupKeepsAReviewWorktreeWithLocalWork(t *testing.T) {
+	m, _ := newManager(t)
+	ctx := context.Background()
+	if err := m.EnsureClone(ctx, "acme/demo"); err != nil {
+		t.Fatal(err)
+	}
+	publishPullRef(t, m, 58)
+	dir, err := m.EnsureReview(ctx, 58)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A commit made in the worktree, on a detached HEAD: no branch points at it.
+	if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runIn(t, dir, "add", "-A")
+	runIn(t, dir, "commit", "-qm", "fix: the thing")
+
+	res, err := m.Cleanup(ctx, func(Candidate) bool { return true })
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if len(res.Removed) != 0 {
+		t.Fatalf("a review worktree with a local commit was removed: %v", res.Removed)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("worktree gone: %v", err)
+	}
+	// The commit is still reachable, which is what makes it recoverable.
+	head, _ := m.HeadSHA(ctx, dir)
+	if exists, _ := m.IsCommit(ctx, dir, head); !exists {
+		t.Error("the local commit should still exist")
+	}
+}
+
+func TestCleanupRemovesACleanFinishedReview(t *testing.T) {
+	m, _ := newManager(t)
+	ctx := context.Background()
+	if err := m.EnsureClone(ctx, "acme/demo"); err != nil {
+		t.Fatal(err)
+	}
+	publishPullRef(t, m, 59)
+	dir, err := m.EnsureReview(ctx, 59)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := m.HeadSHA(ctx, dir)
+
+	res, err := m.Cleanup(ctx, func(c Candidate) bool {
+		return c.Name == "review-59" && c.Head == head
+	})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if len(res.Removed) != 1 || res.Removed[0] != dir {
+		t.Fatalf("removed = %v, want the clean review worktree", res.Removed)
+	}
+}
+
+func TestIsCommitRejectsInventedSHAs(t *testing.T) {
+	m, _ := newManager(t)
+	ctx := context.Background()
+	if err := m.EnsureClone(ctx, "acme/demo"); err != nil {
+		t.Fatal(err)
+	}
+	dir, _, _, err := m.EnsureIssue(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := m.HeadSHA(ctx, dir)
+	if exists, inHistory := m.IsCommit(ctx, dir, head); !exists || !inHistory {
+		t.Errorf("HEAD should resolve: exists=%v inHistory=%v", exists, inHistory)
+	}
+	if exists, _ := m.IsCommit(ctx, dir, "b9ba799"); exists {
+		t.Error("an invented sha must not resolve")
+	}
+	if exists, inHistory := m.IsCommit(ctx, dir, head[:7]); !exists || !inHistory {
+		t.Error("a short sha of a real commit should resolve")
 	}
 }
 
@@ -501,5 +590,44 @@ func TestDiffHunks(t *testing.T) {
 	}
 	if _, ok := hunks["untouched.txt"]; ok {
 		t.Error("unchanged files must not appear in the hunks")
+	}
+}
+
+// publishPullRef makes pull/<n>/head fetchable in the test's bare remote, which is
+// how GitHub exposes a pull request's tip.
+func publishPullRef(t *testing.T, m *Manager, n int) {
+	t.Helper()
+	sha := gitOutput(t, m.CloneDir(), "rev-parse", "origin/main")
+	// The bare remote is the clone's origin; update the ref there.
+	remote := gitOutput(t, m.CloneDir(), "config", "--get", "remote.origin.url")
+	runIn(t, remote, "update-ref", "refs/pull/"+strconv.Itoa(n)+"/head", sha)
+}
+
+// / gitOutput is runIn, returning the output.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// runIn is the suite's git: a fixed identity and no global config, so a developer's
+// own ~/.gitconfig cannot change what a test observes.
+func runIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

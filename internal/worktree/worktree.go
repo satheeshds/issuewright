@@ -69,6 +69,15 @@ func (m *Manager) IssueBranch(number int) string {
 	return m.opt.BranchPrefix + "issue-" + strconv.Itoa(number)
 }
 
+// onAnyRemote reports whether a commit is reachable from a remote-tracking ref.
+func (m *Manager) onAnyRemote(ctx context.Context, dir, head string) bool {
+	if head == "" {
+		return false
+	}
+	out, err := m.git(ctx, dir, "for-each-ref", "--count=1", "--contains", head, "refs/remotes/")
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
 // ReviewPath is the read-only worktree path for a PR review.
 func (m *Manager) ReviewPath(number int) string {
 	return filepath.Join(m.opt.WorkRoot, "review-"+strconv.Itoa(number))
@@ -233,6 +242,14 @@ func (m *Manager) cloneHTTPS(ctx context.Context, slug string) error {
 	return nil
 }
 
+// shortSHA is the seven characters humans quote.
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
 func firstLines(s string, n int) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	if len(lines) > n {
@@ -267,7 +284,13 @@ func (m *Manager) EnsureIssue(ctx context.Context, number int) (path, branch str
 	return path, branch, false, nil
 }
 
-// EnsureReview prepares a detached, read-only worktree at a PR head.
+// EnsureReview prepares a detached worktree at a PR head.
+//
+// The fetched commit is resolved in the clone and named by sha, because FETCH_HEAD
+// is per-worktree: naming it after the clone fetched leaves the worktree unable to
+// resolve it, and git then reads the word as a path ("--detach does not take a path
+// argument"). That bug was invisible while every review worktree was deleted at the
+// end of each tick.
 func (m *Manager) EnsureReview(ctx context.Context, number int) (string, error) {
 	path := m.ReviewPath(number)
 	if err := os.MkdirAll(m.opt.WorkRoot, 0o755); err != nil {
@@ -276,13 +299,30 @@ func (m *Manager) EnsureReview(ctx context.Context, number int) (string, error) 
 	if _, err := m.git(ctx, m.opt.CloneDir, "fetch", "origin", fmt.Sprintf("pull/%d/head", number)); err != nil {
 		return "", err
 	}
+	head, err := m.git(ctx, m.opt.CloneDir, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return "", fmt.Errorf("pull/%d/head: %w", number, err)
+	}
+	head = strings.TrimSpace(head)
 	if _, statErr := os.Stat(path); statErr == nil {
-		if _, err := m.git(ctx, path, "checkout", "--detach", "FETCH_HEAD"); err != nil {
-			return "", err
+		// Rewinding to the new head is normal for a review of an older revision — but
+		// only when nothing unpublished is sitting there. A commit made in this
+		// worktree is on no remote, and checking out would leave it behind, so refuse
+		// and name it instead.
+		if cur, _ := m.HeadSHA(ctx, path); cur != "" && cur != head && !m.onAnyRemote(ctx, path, cur) {
+			return "", fmt.Errorf("review worktree %s is at %s, which is on no remote: it holds unpublished work. "+
+				"Recover it with `git -C %s show %s` and remove the worktree once you have it",
+				path, shortSHA(cur), path, shortSHA(cur))
+		}
+		if _, err := m.git(ctx, path, "checkout", "--detach", head); err != nil {
+			// A dirty review worktree is unpublished work from an earlier run. Do not
+			// reset it away: say what is there and stop, so a human can look.
+			return "", fmt.Errorf("review worktree %s has changes that were never published (%w); "+
+				"inspect it with `git -C %s diff` and remove it once you have the patch", path, err, path)
 		}
 		return path, nil
 	}
-	if _, err := m.git(ctx, m.opt.CloneDir, "worktree", "add", "--detach", path, "FETCH_HEAD"); err != nil {
+	if _, err := m.git(ctx, m.opt.CloneDir, "worktree", "add", "--detach", path, head); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -404,6 +444,51 @@ func (m *Manager) WorkingDiff(ctx context.Context, dir string) (string, error) {
 	return out, nil
 }
 
+// DiffAgainst is WorkingDiff plus every commit made since ref.
+//
+// The distinction matters: an agent that commits its own work leaves a clean tree,
+// so a plain working diff says "no changes" and the work is lost. Diffing against
+// the ref the run started from shows both halves.
+func (m *Manager) DiffAgainst(ctx context.Context, dir, ref string) (string, error) {
+	if ref == "" {
+		return m.WorkingDiff(ctx, dir)
+	}
+	out, err := m.git(ctx, dir, "diff", "--no-color", "--no-ext-diff", ref)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// HeadSHA is the commit a worktree is at.
+func (m *Manager) HeadSHA(ctx context.Context, dir string) (string, error) {
+	out, err := m.git(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// IsCommit reports whether a revision resolves to a commit in this clone, and
+// whether that commit is in HEAD's history.
+//
+// Both halves are what makes "Fixed in b9ba799" checkable: an invented id does not
+// resolve at all, and a real commit on some other branch is not an ancestor of the
+// worktree's HEAD.
+func (m *Manager) IsCommit(ctx context.Context, dir, rev string) (exists, inHistory bool) {
+	rev = strings.TrimSpace(rev)
+	if rev == "" {
+		return false, false
+	}
+	if _, err := m.git(ctx, dir, "cat-file", "-e", rev+"^{commit}"); err != nil {
+		return false, false
+	}
+	if _, err := m.git(ctx, dir, "merge-base", "--is-ancestor", rev, "HEAD"); err != nil {
+		return true, false
+	}
+	return true, true
+}
+
 // CommitSummary is the "cold start" context for a brain that cannot resume: what
 // already happened on this branch.
 func (m *Manager) CommitSummary(ctx context.Context, dir string, max int) (string, error) {
@@ -428,39 +513,98 @@ func (m *Manager) BehindBase(ctx context.Context, dir string) (bool, error) {
 	return n > 0, err
 }
 
-// Cleanup removes worktrees whose branch the caller reports as merged. The
-// callback keeps the "is it safe to delete" decision out of the git layer.
-func (m *Manager) Cleanup(ctx context.Context, merged func(branch string) bool) ([]string, error) {
+// Candidate is one worktree about to be judged for removal.
+type Candidate struct {
+	Path   string
+	Name   string // the directory name: "issue-12", "review-58", …
+	Branch string // "" when HEAD is detached, which a review worktree always is
+	Head   string // the commit the worktree is at
+}
+
+// CleanupResult is what Cleanup did and what it deliberately left alone.
+type CleanupResult struct {
+	Removed []string
+	// Kept lists worktrees that survived with a reason, so a nightly leak does not
+	// look like a healthy box.
+	Kept []KeptWorktree
+}
+
+// KeptWorktree is a worktree Cleanup refused to remove, and why.
+type KeptWorktree struct {
+	Path   string
+	Reason string
+}
+
+// Cleanup removes finished worktrees and refuses to destroy anything that holds
+// work.
+//
+// The first version treated a detached worktree as always removable, on the theory
+// that a review has nothing to keep. A live incident proved otherwise: an agent
+// committed a fix in review-58, the push silently pushed nothing, and the next tick
+// deleted the directory — the commit survived only as an unreachable object. So the
+// rule is now the other way round: nothing is removed without a positive answer
+// from the caller *and* a clean, fully pushed worktree.
+func (m *Manager) Cleanup(ctx context.Context, done func(Candidate) bool) (CleanupResult, error) {
+	var res CleanupResult
 	entries, err := os.ReadDir(m.opt.WorkRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return res, nil
 		}
-		return nil, err
+		return res, err
 	}
-	var removed []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		path := filepath.Join(m.opt.WorkRoot, e.Name())
-		// Detached review worktrees have no branch: always removable.
-		branch := ""
+		head, _ := m.HeadSHA(ctx, path)
+		cand := Candidate{Path: path, Name: e.Name(), Head: head}
 		if out, err := m.git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
-			branch = strings.TrimSpace(out)
+			if b := strings.TrimSpace(out); b != "HEAD" {
+				cand.Branch = b
+			}
 		}
-		if branch != "" && branch != "HEAD" && !merged(branch) {
+
+		// Uncommitted changes are work, whoever made them.
+		if out, err := m.git(ctx, path, "status", "--porcelain", "-uall"); err != nil {
+			res.Kept = append(res.Kept, KeptWorktree{Path: path, Reason: "git status failed"})
+			continue
+		} else if strings.TrimSpace(out) != "" {
+			res.Kept = append(res.Kept, KeptWorktree{Path: path, Reason: "uncommitted changes"})
+			continue
+		}
+		// A detached worktree has no branch to compare, so ask git the only question
+		// that matters: is this commit anywhere on the remote? A commit made in a
+		// review worktree is not, and removing it is how a fix becomes unreachable.
+		if cand.Branch == "" {
+			if !m.onAnyRemote(ctx, path, cand.Head) {
+				res.Kept = append(res.Kept, KeptWorktree{Path: path, Reason: "commits not on any remote"})
+				continue
+			}
+		}
+		// A branch that is ahead of its remote holds commits nobody else has.
+		if cand.Branch != "" {
+			remote, err := m.git(ctx, path, "rev-parse", "--verify", "--quiet", "origin/"+cand.Branch)
+			if err != nil || strings.TrimSpace(remote) != cand.Head {
+				res.Kept = append(res.Kept, KeptWorktree{Path: path, Reason: "commits not on origin/" + cand.Branch})
+				continue
+			}
+		}
+		if !done(cand) {
+			res.Kept = append(res.Kept, KeptWorktree{Path: path, Reason: "not finished"})
 			continue
 		}
 		if _, err := m.git(ctx, m.opt.CloneDir, "worktree", "remove", "--force", path); err != nil {
+			res.Kept = append(res.Kept, KeptWorktree{Path: path, Reason: "git refused to remove it"})
 			continue
 		}
-		if branch != "" && branch != "HEAD" {
-			_, _ = m.git(ctx, m.opt.CloneDir, "branch", "-D", branch)
+		if cand.Branch != "" {
+			_, _ = m.git(ctx, m.opt.CloneDir, "branch", "-D", cand.Branch)
 		}
-		removed = append(removed, path)
+		res.Removed = append(res.Removed, path)
 	}
-	return removed, nil
+	return res, nil
 }
 
 // DiffPaths renders the change to specific paths as a patch, relative to ref

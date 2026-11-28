@@ -140,6 +140,46 @@ func (c *CLI) ListCommentThreads(ctx context.Context, slug string, pr int) ([]Co
 	return threads, conversation, nil
 }
 
+// ListComments returns the conversation comments on an issue or pull request that
+// are newer than afterID, oldest first.
+//
+// One REST call, newest page only: a conversation is answered from its recent
+// comments, and paging back through a two-hundred-comment thread every tick would
+// cost more than it tells us. Filtering by id rather than by timestamp keeps the
+// cursor exact even when two comments share a second.
+func (c *CLI) ListComments(ctx context.Context, slug string, number, afterID int) ([]Comment, error) {
+	out, err := c.gh(ctx, "api", fmt.Sprintf("repos/%s/issues/%d/comments", slug, number),
+		"-f", "per_page=100", "-f", "sort=created", "-f", "direction=desc")
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		ID        int       `json:"id"`
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"created_at"`
+		User      struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse comments: %w", err)
+	}
+	comments := make([]Comment, 0, len(raw))
+	// The API answers newest first; a prompt reads oldest first, so the turn sees
+	// the conversation in the order the humans had it.
+	for i := len(raw) - 1; i >= 0; i-- {
+		r := raw[i]
+		if r.ID <= afterID {
+			continue
+		}
+		comments = append(comments, Comment{
+			ID: r.ID, Author: r.User.Login, Body: r.Body, CreatedAt: r.CreatedAt,
+		})
+	}
+	return comments, nil
+}
+
 // ReplyToComment answers a comment where it was written: on the review thread for
 // an inline comment, or as a new conversation comment otherwise.
 func (c *CLI) ReplyToComment(ctx context.Context, slug string, pr int, to Comment, body string) error {

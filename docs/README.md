@@ -238,6 +238,7 @@ only switch, and the page tells you which one:
 | Stuck job | What unblocks it |
 | --- | --- |
 | blocked issue | remove `agent:blocked` (the next tick retries) |
+| waiting for an answer | answer the question in a comment (or remove `agent:question`, which also continues it) |
 | failed review | add `review:go` back |
 | blocked respond | nothing — the cursor only advances on a successful reply, so it retries itself |
 
@@ -286,8 +287,8 @@ has to be stopped first.
    Review is scheduled before implement so a short review is not stuck behind a
    long build.
 3. Skip. Anything already labelled `agent:in-progress` / `agent:blocked` /
-   `agent:done`, or with a blocked claim, is left alone. This is what makes an
-   interrupted tick cheap.
+   `agent:done` / `agent:question`, or with a blocked claim, is left alone. This is
+   what makes an interrupted tick cheap.
 4. Claim. `agent:in-progress` label plus one comment naming the branch.
 5. Run. The workflow renders a prompt (its template + your `.agent/rules.md`
    + the issue), the brain runs it in the worktree, and the JSONL stream is teed
@@ -298,7 +299,39 @@ has to be stopped first.
    A workflow without `Perms().Write` cannot reach a push at all.
 8. Finish. `agent:done`, a comment with the PR link and check results — or
    `agent:blocked`, one comment with the reason, and the bot unassigned so it is
-   not retried by accident.
+   not retried by accident. A run that needs a human decision writes `QUESTION.md`
+   instead and ends as `agent:question`: the branch and the draft PR stay, and the
+   thread waits.
+
+### One agent per issue, and one per pull request
+
+A run is a **turn**, not a fresh agent. Each issue and each reviewed pull request
+has a conversation record under `state/<repo>/conversations/`, holding the brain's
+session id, the branch, the turn count, the cost, what has been asked, and which
+comments have been answered. The next tick reopens that session, so the model
+still knows what it decided and why.
+
+What starts a turn:
+
+| Comment | Starts a turn? |
+| --- | --- |
+| a human reply while the agent is waiting (`agent:question`) | yes — it is the answer |
+| a human reply after a failure (`agent:blocked`) | yes — it is the retry |
+| anything on the pull request the agent opened | yes — that PR exists to be reviewed |
+| a reply in a review thread the bot opened | yes |
+| a comment on the issue that mentions the bot (`@your-bot`) | yes |
+| chatter on the issue, or on someone else's PR | no |
+
+`issuewright status` and the status page show a conversation's state and turn
+count, so a thread that has gone quiet is visible. `@your-bot restart` in a comment
+starts a fresh session for the same issue — turn one again — which is the way out
+of a conversation that went the wrong way. `issue.max_turns` (default 10) is the brake:
+past it the runner blocks instead of arguing.
+
+A conversation ends when its target does: a merged pull request or a closed issue
+archives the record under `conversations/archive/`, with its turns and cost — the
+history of who worked on what. `restart` does not end it. It bumps the
+generation, so the audit trail survives while the model's memory starts clean.
 
 ### The agent's clone
 
@@ -345,6 +378,23 @@ human comment ──▶ 👀 reaction ──▶ one run per PR ──▶ replies
 - **Fixes only on its own branch.** If a comment asks for a change and the branch
   starts with `branch_prefix`, the run commits and pushes. On a human's branch it
   never pushes: the patch is posted as a `diff` block for them to apply.
+- **Publishes before it speaks.** The commit and the push happen *before* a single
+  reply is posted, and the push sends the worktree's `HEAD` to the branch by
+  refspec. Both halves were learned from a live incident: an agent committed a fix
+  itself, the runner had nothing left to commit, the push was skipped — and the
+  reply had already told the human "fixed in b9ba799" for a commit that was on no
+  remote.
+- **A claimed commit has to exist.** Any reply (and the implementation's report)
+  that names a commit is checked against the worktree: it must resolve *and* be in
+  the branch's history. A run that names `b9ba799` when no such commit exists is
+  blocked with exactly that sentence, instead of posting a claim a human cannot
+  check. Citations are not claims: `…/commit/abc1234`, `owner/repo@abc1234` and
+  `sha256:abc1234` are ignored.
+- **Nothing unpublished is deleted.** A worktree is only removed when its PR is
+  merged or closed, the tree is clean, and its commits are on the remote — a commit
+  made in a review worktree is on no remote, so the worktree is kept and logged
+  (`kept worktree …: commits not on any remote`). Such a worktree also refuses to be
+  reset for the next review, naming the commit so it can be recovered.
 - **Resolves its own threads** once answered, never a thread a human opened.
 - A reply naming a comment id the run was not given is dropped, not guessed — an
   answer in the wrong thread is worse than no answer.

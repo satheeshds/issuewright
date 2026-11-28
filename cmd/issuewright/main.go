@@ -330,9 +330,15 @@ func cmdStatus(ctx context.Context, args []string) error {
 		fmt.Println("nothing pending")
 		return nil
 	}
-	fmt.Printf("%-14s %-7s %-6s %-12s %-14s %s\n", "REPO", "KIND", "NUM", "WORKFLOW", "STATE", "DETAIL")
+	fmt.Printf("%-14s %-7s %-6s %-12s %-14s %-5s %-8s %s\n",
+		"REPO", "KIND", "NUM", "WORKFLOW", "STATE", "TURNS", "COST", "DETAIL")
 	for _, r := range rows {
-		fmt.Printf("%-14s %-7s %-6d %-12s %-14s %s\n", r.Repo, r.Kind, r.Number, r.Workflow, r.State, r.Detail)
+		cost := "—"
+		if r.CostUSD > 0 {
+			cost = fmt.Sprintf("$%.2f", r.CostUSD)
+		}
+		fmt.Printf("%-14s %-7s %-6d %-12s %-14s %-5d %-8s %s\n",
+			r.Repo, r.Kind, r.Number, r.Workflow, r.State, r.Turns, cost, r.Detail)
 	}
 	return nil
 }
@@ -487,8 +493,8 @@ func listBrains() {
 			continue
 		}
 		c := d.Caps()
-		fmt.Printf("  %-12s resume=%-5t model=%-5t thinking=%-5t streaming=%t\n",
-			name, c.Resume, c.Model, c.Thinking, c.Streaming)
+		fmt.Printf("  %-12s conversation=%-5t resume=%-5t model=%-5t thinking=%-5t streaming=%t\n",
+			name, c.Conversation, c.Resume, c.Model, c.Thinking, c.Streaming)
 	}
 }
 

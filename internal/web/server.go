@@ -123,6 +123,10 @@ type JobView struct {
 	LabelDo   string    `json:"label_action,omitempty"`
 	LogName   string    `json:"log,omitempty"`
 	Tail      []string  `json:"tail,omitempty"`
+	// Turns and CostUSD describe the conversation this job belongs to: the same
+	// agent may have taken ten turns on one issue.
+	Turns   int     `json:"turns,omitempty"`
+	CostUSD float64 `json:"cost_usd,omitempty"`
 }
 
 // RepoView is one repo's slice of the page.
@@ -130,6 +134,7 @@ type RepoView struct {
 	Name      string            `json:"name"`
 	Slug      string            `json:"slug"`
 	Running   []JobView         `json:"running"`
+	Waiting   []JobView         `json:"waiting"`
 	Blocked   []JobView         `json:"blocked"`
 	Finished  []JobView         `json:"finished"`
 	Recent    []RunSummary      `json:"recent"`
@@ -183,14 +188,25 @@ func (s *Server) build(ctx context.Context) Dashboard {
 		}
 		view.Clone = ReadClone(ctx, s.run, repo.Path)
 
+		convs := map[string]state.Conversation{}
+		if list, err := store.Conversations(repo.Name); err == nil {
+			for _, c := range list {
+				convs[fmt.Sprintf("%s#%d", c.Workflow, c.Number)] = c
+			}
+		}
 		claims, err := store.Claims(repo.Name)
 		if err == nil {
 			sort.Slice(claims, func(i, j int) bool { return claims[i].Started.After(claims[j].Started) })
 			for _, c := range claims {
 				job := s.jobView(ctx, repo, c)
+				if conv, ok := convs[fmt.Sprintf("%s#%d", c.Workflow, c.Number)]; ok {
+					job.Turns, job.CostUSD = conv.Turns, conv.CostUSD
+				}
 				switch c.State {
 				case "running":
 					view.Running = append(view.Running, job)
+				case "asking":
+					view.Waiting = append(view.Waiting, job)
 				case "blocked":
 					view.Blocked = append(view.Blocked, job)
 				default:
@@ -221,6 +237,7 @@ func (s *Server) labelNames(repo config.Repo) map[string]string {
 			"done":        def.Issue.DoneLabel,
 			"force":       def.Issue.ForceLabel,
 			"review":      def.Issue.ReviewLabel,
+			"question":    def.Issue.QuestionLabel,
 		}
 	}
 	return map[string]string{
@@ -229,6 +246,7 @@ func (s *Server) labelNames(repo config.Repo) map[string]string {
 		"done":        prof.Issue.DoneLabel,
 		"force":       prof.Issue.ForceLabel,
 		"review":      prof.Issue.ReviewLabel,
+		"question":    prof.Issue.QuestionLabel,
 	}
 }
 
@@ -249,6 +267,8 @@ func (s *Server) jobView(ctx context.Context, repo config.Repo, c state.Claim) J
 		job.LabelName, job.LabelDo = labels["review"], "add this label to review again"
 	case c.State == "blocked":
 		job.LabelName, job.LabelDo = labels["blocked"], "remove this label to retry"
+	case c.State == "asking":
+		job.LabelName, job.LabelDo = labels["question"], "answer the question in a comment"
 	case c.State == "done":
 		job.LabelName = labels["done"] + " + " + labels["force"]
 		job.LabelDo = "remove the first and add the second to redo it"

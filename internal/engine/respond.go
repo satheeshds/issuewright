@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/satheeshds/issuewright/internal/github"
 	"github.com/satheeshds/issuewright/internal/state"
 	"github.com/satheeshds/issuewright/internal/workflow"
-	"github.com/satheeshds/issuewright/prompts"
 )
 
 // ownedThreads are the threads this run answered and may therefore resolve: only
@@ -43,6 +41,13 @@ func (e *Engine) findCommentWork(ctx context.Context) ([]commentJob, error) {
 	var out []commentJob
 	for _, pr := range prs {
 		if !e.touchedPR(pr) {
+			continue
+		}
+		// The agent that wrote this branch answers its own pull request, with its
+		// history and its own decisions. respond stays the fallback for pull
+		// requests that predate conversations, or whose author was a human.
+		if conv, ok := e.store.ConversationByBranch(e.opt.Repo.Name, pr.HeadRef); ok {
+			e.logf("respond: leaving #%d to its author conversation (%s)", pr.Number, conv.SessionID)
 			continue
 		}
 		threads, conversation, err := e.opt.GitHub.ListCommentThreads(ctx, e.opt.Repo.Slug, pr.Number)
@@ -161,6 +166,10 @@ func (e *Engine) respond(ctx context.Context, job commentJob) Result {
 		workdir = e.wts.ReviewPath(job.PR.Number)
 	}
 
+	// The commit the pull request is at before this run: what the diff and the claim
+	// check are measured against.
+	preHead, _ := e.wts.HeadSHA(ctx, workdir)
+
 	rules, err := e.rulesFor("respond")
 	if err != nil {
 		return e.blocked(res, perms, err)
@@ -235,6 +244,10 @@ func (e *Engine) respond(ctx context.Context, job commentJob) Result {
 	if err != nil {
 		return e.blocked(res, perms, fmt.Errorf("the run's replies are unusable: %w", err))
 	}
+	// The artifacts are the runner's channel, not the agent's output: leaving one in a
+	// review worktree makes the tree dirty, and a dirty review worktree is unpublished
+	// work as far as the next run can tell.
+	e.clearArtifacts(workdir)
 
 	// Replies are only posted for comments this run was given. An id that does not
 	// match is dropped, never guessed: posting an answer into the wrong thread is
@@ -245,6 +258,67 @@ func (e *Engine) respond(ctx context.Context, job commentJob) Result {
 	}
 	var posted []int
 	var unplaceable []int
+	// Publish before replying. Every step below runs before a single word is posted,
+	// because a reply that says "fixed in abc1234" is a promise, and a promise made
+	// before the push is a promise the branch may not keep. This ordering is the fix
+	// for a live incident: the agent committed a fix, respond pushed nothing, and the
+	// reply had already told the human where to look.
+	commitNote := ""
+	head, _ := e.wts.HeadSHA(ctx, workdir)
+	hasChanges := len(resp.Changes) > 0 || (head != "" && preHead != "" && head != preHead)
+
+	if hasChanges && !perms.Write {
+		// Never push to someone else's branch. Hand the patch over instead, so the
+		// work is not lost and the human is not left guessing. Diff against the pull
+		// request's head, not just the working tree: an agent that committed its own
+		// change leaves a clean tree, and a plain working diff would say "no changes"
+		// while dropping the work.
+		patch, derr := e.wts.DiffAgainst(ctx, workdir, job.PR.HeadRefOID)
+		if derr != nil {
+			e.logf("warning: could not read the patch: %v", derr)
+		}
+		note := "The comment asked for a change, but this pull request's branch is not one I created, so I have not pushed anything."
+		if strings.TrimSpace(patch) != "" {
+			note += "\n\n```diff\n" + strings.TrimRight(patch, "\n") + "\n```"
+		}
+		if err := e.opt.GitHub.Comment(ctx, e.opt.Repo.Slug, res.Number, note); err != nil {
+			e.logf("warning: could not post the patch: %v", err)
+		}
+		res.Detail = "changes not pushed (not my branch); patch posted"
+		e.logf("respond#%d: %s", res.Number, res.Detail)
+	} else if hasChanges {
+		if err := e.wts.EnsureClone(ctx, e.opt.Repo.Slug); err != nil {
+			return e.blocked(res, perms, err)
+		}
+		if ok, err := e.wts.CommitAll(ctx, workdir, fmt.Sprintf(
+			"fix: address review comments on #%d", res.Number)); err != nil {
+			return e.blocked(res, perms, fmt.Errorf("commit: %w", err))
+		} else if ok {
+			e.logf("respond#%d: committed the agent's leftover changes", res.Number)
+		}
+		// Push unconditionally, and push HEAD: the review worktree is detached at the
+		// pull request's head, so there is no local branch named after it, and the
+		// agent may well have made the commit itself. Both halves used to skip the
+		// push, silently.
+		if err := e.opt.GitHub.PushHead(ctx, workdir, job.PR.HeadRef); err != nil {
+			return e.blocked(res, perms, fmt.Errorf("push: %w", err))
+		}
+		commitNote = " (pushed)"
+		if sha, herr := e.wts.HeadSHA(ctx, workdir); herr == nil && sha != "" {
+			commitNote = " (pushed " + shortSHA(sha) + ")"
+		}
+	}
+
+	// Now the replies, with their claims checked against the branch the work actually
+	// landed on.
+	bodies := make([]string, 0, len(resp.Replies))
+	for _, r := range resp.Replies {
+		bodies = append(bodies, r.Body)
+	}
+	if err := e.verifyClaims(ctx, workdir, bodies...); err != nil {
+		return e.blocked(res, perms, err)
+	}
+
 	for _, r := range resp.Replies {
 		c, ok := known[r.InReplyTo]
 		if !ok {
@@ -261,44 +335,14 @@ func (e *Engine) respond(ctx context.Context, job commentJob) Result {
 		e.logf("warning: dropped replies for unknown comment ids %v", unplaceable)
 	}
 
-	// Changes: pushed only to a branch this runner owns.
-	commitNote := ""
-	if len(resp.Changes) > 0 && !perms.Write {
-		// Never push to someone else's branch. Hand the patch over instead, so the
-		// work is not lost and the human is not left guessing.
-		patch, derr := e.wts.WorkingDiff(ctx, workdir)
-		if derr != nil {
-			e.logf("warning: could not read the patch: %v", derr)
+	// One note on the conversation that something changed, now that it has.
+	if commitNote != "" && perms.Comment {
+		body := "Addressed review comments."
+		if resp.Body != "" {
+			body = resp.Body
 		}
-		note := "The comment asked for a change, but this pull request's branch is not one I created, so I have not pushed anything."
-		if strings.TrimSpace(patch) != "" {
-			note += "\n\n```diff\n" + strings.TrimRight(patch, "\n") + "\n```"
-		}
-		if err := e.opt.GitHub.Comment(ctx, e.opt.Repo.Slug, res.Number, note); err != nil {
-			e.logf("warning: could not post the patch: %v", err)
-		}
-		res.Detail = "changes not pushed (not my branch); patch posted"
-		e.logf("respond#%d: %s", res.Number, res.Detail)
-	} else if len(resp.Changes) > 0 {
-		if err := e.wts.EnsureClone(ctx, e.opt.Repo.Slug); err != nil {
-			return e.blocked(res, perms, err)
-		}
-		_ = os.Remove(filepath.Join(workdir, prompts.SummaryFile))
-		if ok, err := e.wts.CommitAll(ctx, workdir, fmt.Sprintf(
-			"fix: address review comments on #%d", res.Number)); err != nil {
-			return e.blocked(res, perms, fmt.Errorf("commit: %w", err))
-		} else if ok {
-			if err := e.opt.GitHub.PushBranch(ctx, workdir, job.PR.HeadRef); err != nil {
-				return e.blocked(res, perms, fmt.Errorf("push: %w", err))
-			}
-			commitNote = " (pushed)"
-			body := "Addressed review comments."
-			if resp.Body != "" {
-				body = resp.Body
-			}
-			if err := e.opt.GitHub.Comment(ctx, e.opt.Repo.Slug, res.Number, body); err != nil {
-				e.logf("warning: could not comment the outcome: %v", err)
-			}
+		if err := e.opt.GitHub.Comment(ctx, e.opt.Repo.Slug, res.Number, body); err != nil {
+			e.logf("warning: could not comment the outcome: %v", err)
 		}
 	}
 
@@ -329,6 +373,14 @@ func (e *Engine) respond(ctx context.Context, job commentJob) Result {
 	res.State = StateDone
 	res.Detail = fmt.Sprintf("%d repl%s%s", len(posted), plural(len(posted)), commitNote)
 	return res
+}
+
+// shortSHA is the seven characters humans quote.
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 func plural(n int) string {

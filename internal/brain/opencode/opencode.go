@@ -42,6 +42,10 @@ func (d *Driver) Name() string { return "opencode" }
 // opencode resumes sessions and takes a model, but its thinking level is a
 // display flag rather than a reasoning budget, so Thinking is false: the runner
 // then knows not to claim a thinking level was applied.
+//
+// Conversation is false on purpose: opencode's `--continue` means "the latest
+// session in this directory", not "the session with this id". Without the id, the
+// runner gives it the commit-summary prompt instead of pretending it resumed.
 func (d *Driver) Caps() brain.Caps {
 	return brain.Caps{Resume: true, Model: true, Thinking: false, Streaming: false}
 }

@@ -50,18 +50,22 @@ func (e *Engine) Prompt(job workflow.Job) (brain.Spec, error) {
 		return brain.Spec{}, workflow.ErrNoJob
 	}
 	text, err := prompts.Render("review", prompts.Inputs{
-		Repo:        job.Repo,
-		Number:      job.Number,
-		Title:       job.Title,
-		Body:        job.Body,
-		Labels:      job.Labels,
-		Branch:      job.Branch,
-		BaseBranch:  job.BaseBranch,
-		Workdir:     job.Workdir,
-		Kind:        string(job.Kind),
-		Rules:       job.Rules,
-		SecretPaths: job.Protect.SecretPaths,
-		Notes:       job.Notes,
+		Repo:         job.Repo,
+		Number:       job.Number,
+		Title:        job.Title,
+		Body:         job.Body,
+		Labels:       job.Labels,
+		Branch:       job.Branch,
+		BaseBranch:   job.BaseBranch,
+		Workdir:      job.Workdir,
+		Kind:         string(job.Kind),
+		Rules:        job.Rules,
+		SecretPaths:  job.Protect.SecretPaths,
+		Notes:        job.Notes,
+		Comments:     workflow.PromptComments(job.Comments),
+		Turn:         job.Turn,
+		LastReview:   job.LastReview,
+		LastQuestion: job.LastQuestion,
 	})
 	if err != nil {
 		return brain.Spec{}, err

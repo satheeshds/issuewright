@@ -29,6 +29,7 @@ const (
 	DefaultBranchPrefix          = "agent/"
 	DefaultInProgress            = "agent:in-progress"
 	DefaultBlocked               = "agent:blocked"
+	DefaultQuestion              = "agent:question"
 	DefaultDone                  = "agent:done"
 	DefaultForceLabel            = "agent:go"
 	DefaultPickupMode            = "assignee"
@@ -36,6 +37,7 @@ const (
 	DefaultReviewInProgressLabel = "review:in-progress"
 	DefaultReviewDoneLabel       = "review:done"
 	DefaultReviewBlockedLabel    = "review:blocked"
+	DefaultMaxTurns              = 10
 	SupportedProfileMajor        = 1
 )
 

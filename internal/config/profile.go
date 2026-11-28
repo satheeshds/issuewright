@@ -53,9 +53,17 @@ type IssueSettings struct {
 	ReviewInProgressLabel string `yaml:"review_in_progress_label"`
 	ReviewDoneLabel       string `yaml:"review_done_label"`
 	ReviewBlockedLabel    string `yaml:"review_blocked_label"`
+	// QuestionLabel is what a conversation carries while the agent waits for an
+	// answer. It is not a failure: the work is kept, the draft pull request stays
+	// open, and the next human comment resumes the same agent.
+	QuestionLabel string `yaml:"question_label"`
 	// Mentions are the strings that ask the bot to answer a comment. The bot login
 	// is always included; extra aliases go here.
 	Mentions []string `yaml:"mentions"`
+
+	// MaxTurns caps how many turns one conversation may take before the runner
+	// stops it. A long implementation is normal; an endless argument is not.
+	MaxTurns int `yaml:"max_turns"`
 }
 
 // Check is one verification rule: when the paths match, run the commands.
@@ -218,6 +226,7 @@ func Defaults() *Profile {
 		Version: SupportedProfileMajor,
 		Issue: IssueSettings{Pickup: DefaultPickupMode, ForceLabel: DefaultForceLabel,
 			InProgressLabel: DefaultInProgress, BlockedLabel: DefaultBlocked, DoneLabel: DefaultDone,
+			QuestionLabel: DefaultQuestion, MaxTurns: DefaultMaxTurns,
 			ReviewLabel: DefaultReviewLabel, ReviewInProgressLabel: DefaultReviewInProgressLabel,
 			ReviewDoneLabel: DefaultReviewDoneLabel, ReviewBlockedLabel: DefaultReviewBlockedLabel},
 		BranchPrefix: DefaultBranchPrefix,
@@ -260,6 +269,12 @@ func (p *Profile) applyDefaults() {
 	}
 	if p.Issue.DoneLabel == "" {
 		p.Issue.DoneLabel = d.Issue.DoneLabel
+	}
+	if p.Issue.QuestionLabel == "" {
+		p.Issue.QuestionLabel = d.Issue.QuestionLabel
+	}
+	if p.Issue.MaxTurns <= 0 {
+		p.Issue.MaxTurns = d.Issue.MaxTurns
 	}
 	if p.Issue.ReviewLabel == "" {
 		p.Issue.ReviewLabel = DefaultReviewLabel

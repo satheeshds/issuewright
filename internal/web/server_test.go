@@ -299,3 +299,40 @@ func TestUnknownPathIs404(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardShowsAWaitingConversation(t *testing.T) {
+	opt, root := fixture(t)
+	statedir := filepath.Join(root, "state", "demo")
+	// A turn that ended with a question: the claim says asking, the conversation
+	// knows which turn it is on.
+	if err := os.WriteFile(filepath.Join(statedir, "implement-53.json"),
+		[]byte(`{"repo":"demo","workflow":"implement","number":53,"kind":"issue_assigned","branch":"agent/issue-53","attempt":1,"started_at":"2026-11-25T14:30:00Z","state":"asking","detail":"waiting for an answer: postgres or sqlite?"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(statedir, "conversations"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(statedir, "conversations", "implement-53.json"),
+		[]byte(`{"repo":"demo","workflow":"implement","number":53,"session_id":"iw-demo-implement-53","state":"asking","turns":3,"cost_usd":1.25}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, _ := New(opt)
+	rec := get(t, srv.Handler(), "GET", "/")
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard = %d:\n%s", rec.Code, body)
+	}
+	if !strings.Contains(body, "Waiting for an answer") {
+		t.Error("a conversation waiting for a human should have its own section")
+	}
+	if !strings.Contains(body, "implement #53") || !strings.Contains(body, "postgres or sqlite") {
+		t.Errorf("the question should be visible:\n%s", body)
+	}
+	if !strings.Contains(body, "turn 3") {
+		t.Error("the turn count should be shown")
+	}
+	if !strings.Contains(body, "answer the question in a comment") {
+		t.Error("the page should say what unblocks it")
+	}
+}

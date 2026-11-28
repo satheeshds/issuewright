@@ -65,6 +65,28 @@ func TestRenderReviewIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestQuestionFileIsTheNonTerminalAsk(t *testing.T) {
+	impl, err := Render("implement", Inputs{Repo: "a/b", Number: 3, Title: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"QUESTION.md", "last** thing you write", "BLOCKED.md"} {
+		if !strings.Contains(impl, want) {
+			t.Errorf("implement prompt missing %q", want)
+		}
+	}
+	rev, err := Render("review", Inputs{Repo: "a/b", Number: 3, Title: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rev, "QUESTION.md") {
+		t.Error("review prompt should offer the ask-a-question path")
+	}
+	if strings.Contains(impl, "{{") || strings.Contains(rev, "{{") {
+		t.Errorf("unsubstituted placeholder: %s", firstPlaceholder(impl+rev))
+	}
+}
+
 func TestRenderUnknownWorkflow(t *testing.T) {
 	if _, err := Render("triage", Inputs{}); err == nil {
 		t.Fatal("expected an error for a workflow with no template")

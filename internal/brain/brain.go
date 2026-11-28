@@ -18,10 +18,15 @@ import (
 // assuming: a driver without Resume gets a cold-start prompt instead of a
 // resume flag it does not understand.
 type Caps struct {
-	Resume    bool // can continue a previous session in the same directory
-	Model     bool // accepts a model override
-	Thinking  bool // accepts a thinking/reasoning level
-	Streaming bool // emits structured events (JSONL) rather than plain text
+	Resume bool // can continue a previous session in the same directory
+	// Conversation means the driver can open a *named* conversation and get its
+	// history back on the next run, rather than "the latest session in this
+	// directory". It is what makes one agent per issue possible: the runner hands
+	// over Spec.Conversation and the driver either resumes it or creates it.
+	Conversation bool
+	Model        bool // accepts a model override
+	Thinking     bool // accepts a thinking/reasoning level
+	Streaming    bool // emits structured events (JSONL) rather than plain text
 }
 
 // Spec is one run: everything a driver needs and nothing about the repo.
@@ -32,6 +37,10 @@ type Spec struct {
 	Thinking string
 	Timeout  time.Duration
 	Continue bool
+	// Conversation is the driver-specific handle for this target's history — a
+	// session id for a CLI that supports one. Empty means "no identity yet", and
+	// the driver falls back to Continue.
+	Conversation string
 }
 
 // Result is what a run produced.

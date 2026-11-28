@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/satheeshds/issuewright/internal/brain"
+	"github.com/satheeshds/issuewright/prompts"
 )
 
 // Kind is an event type the runner can observe.
@@ -97,11 +98,39 @@ type Job struct {
 	// Resume means this branch already has work: ask for a continuation rather
 	// than a fresh start.
 	Resume bool
-	// Comments are the review comments this run answers.
+	// Comments are the comments this run answers: a review-comment run, or the
+	// next turn of a conversation.
 	Comments []JobComment
+	// Turn is which turn of this conversation the run is (1 = first). A turn above
+	// 1 means the brain has history for this target and must continue it.
+	Turn int
+	// Conversation is the runner's handle for the target's history, empty when the
+	// brain cannot keep one.
+	Conversation string
+	// LastReview is the review this conversation produced for an earlier revision
+	// of the pull request (review conversations only).
+	LastReview string
+	// LastQuestion is what this agent asked the last time it stopped, when this
+	// run is the answer to it.
+	LastQuestion string
 	// OwnBranch is true when the PR head branch is one this runner created, so a
 	// fix may be pushed to it. Never true for someone else's branch.
 	OwnBranch bool
+}
+
+// PromptComments converts the workflow's view of a comment into the prompt
+// package's, so each workflow does not repeat the mapping.
+func PromptComments(in []JobComment) []prompts.JobComment {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]prompts.JobComment, 0, len(in))
+	for _, c := range in {
+		out = append(out, prompts.JobComment{
+			ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, IsReview: c.IsReview,
+		})
+	}
+	return out
 }
 
 // Workflow is one kind of run.

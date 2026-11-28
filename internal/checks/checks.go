@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -22,6 +23,9 @@ type Options struct {
 	Log io.Writer
 	// Timeout bounds each command; zero means 30 minutes.
 	Timeout time.Duration
+	// Path is the PATH the commands run with, defaulting to the process's. Kept so a
+	// "tool not found" failure can name it.
+	Path string
 	// GitBin defaults to "git".
 	GitBin string
 }
@@ -38,6 +42,9 @@ func New(opt Options) *Runner {
 	}
 	if opt.GitBin == "" {
 		opt.GitBin = "git"
+	}
+	if opt.Path == "" {
+		opt.Path = os.Getenv("PATH")
 	}
 	return &Runner{opt: opt}
 }
@@ -80,7 +87,15 @@ func (r *Runner) RunCheck(ctx context.Context, c config.Check) Result {
 	for _, cmd := range c.Run {
 		output, err := r.shell(ctx, cmd)
 		if err != nil {
-			res.Failures = append(res.Failures, fmt.Sprintf("%s: %v%s", cmd, err, tail(output)))
+			failure := fmt.Sprintf("%s: %v%s", cmd, err, tail(output))
+			if tool, ok := missingTool(output); ok {
+				// `sh: 1: go: not found` is not a failing test, it is a broken PATH on
+				// the machine running the check. Say that, with the PATH in question.
+				failure += fmt.Sprintf("\n    %s is not on this run's PATH (%s).", tool, r.opt.Path)
+				failure += fmt.Sprintf("\n    Add its directory to PATH in the service environment" +
+					" (e.g. /srv/agent/agent.env) — a PATH there replaces the unit's, so include the rest.")
+			}
+			res.Failures = append(res.Failures, failure)
 			res.Duration = time.Since(start)
 			return res
 		}
@@ -113,6 +128,10 @@ func (r *Runner) shell(ctx context.Context, command string) (string, error) {
 
 	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
 	cmd.Dir = r.opt.Dir
+	// Replace PATH rather than appending a second one: a duplicate leaves the child
+	// with the original, which is how a "not found" test was passing for the wrong
+	// reason.
+	cmd.Env = environWithPath(r.opt.Path)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -217,6 +236,40 @@ func Summary(results []Result) string {
 // ErrNoShell is returned when the machine has no shell, which would make every
 // check silently "pass".
 var ErrNoShell = errors.New("checks: no /bin/sh available")
+
+// environWithPath returns the current environment with PATH replaced.
+func environWithPath(path string) []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "PATH="+path)
+}
+
+// missingTool reads `sh: 1: go: not found` (or the bash spelling) out of a command's
+// output. Only that shape counts: a test that prints "not found" is a real failure.
+func missingTool(output string) (string, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		for _, marker := range []string{": not found", ": command not found"} {
+			if i := strings.Index(line, marker); i > 0 {
+				prefix := line[:i]
+				if j := strings.LastIndex(prefix, ": "); j >= 0 {
+					prefix = prefix[j+2:]
+				}
+				tool := strings.TrimSpace(prefix)
+				if tool != "" && !strings.Contains(tool, " ") {
+					return tool, true
+				}
+			}
+		}
+	}
+	return "", false
+}
 
 // tail keeps the last few lines of command output for a comment or PR body;
 // the full output is already in the run log.

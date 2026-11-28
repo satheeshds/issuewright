@@ -24,6 +24,7 @@ case "$1 $2" in
   "pr list")     cat "$GH_DIR/prs.json" ;;
   "pr view")     cat "$GH_DIR/pr.json" ;;
   "pr create")   printf 'https://github.com/acme/demo/pull/42\n' ;;
+  api*)          if [ -f "$GH_DIR/api.json" ]; then cat "$GH_DIR/api.json"; else printf 'ok\n'; fi ;;
   *)             printf 'ok\n' ;;
 esac
 exit 0
@@ -91,6 +92,41 @@ func TestCLIListsAssignedIssues(t *testing.T) {
 	for _, want := range []string{"issue|list", "--repo|acme/demo", "--assignee|demo-bot[bot]", "--state|open", "number,title,body"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("gh args missing %q: %s", want, args)
+		}
+	}
+}
+
+func TestCLIListsCommentsAfterTheCursor(t *testing.T) {
+	dir := t.TempDir()
+	c := fakeGH(t, dir)
+	// The API answers newest first; the runner needs them oldest first, and only
+	// the ones the turn has not answered yet.
+	writeCanned(t, dir, "api.json", `[
+	  {"id": 300, "body": "and the second thing", "created_at": "2026-11-16T21:00:02Z", "user": {"login": "human", "type": "User"}},
+	  {"id": 200, "body": "first thing", "created_at": "2026-11-16T21:00:01Z", "user": {"login": "human", "type": "User"}},
+	  {"id": 100, "body": "already answered", "created_at": "2026-11-16T20:00:00Z", "user": {"login": "demo-bot", "type": "Bot"}}
+	]`)
+	got, err := c.ListComments(context.Background(), "acme/demo", 12, 100)
+	if err != nil {
+		t.Fatalf("ListComments: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("comments = %+v, want the two after 100", got)
+	}
+	if got[0].ID != 200 || got[1].ID != 300 {
+		t.Errorf("order = %d,%d, want oldest first 200,300", got[0].ID, got[1].ID)
+	}
+	if got[0].Body != "first thing" || got[0].Author != "human" {
+		t.Errorf("parsed comment = %+v", got[0])
+	}
+	if got[0].IsReview {
+		t.Error("a conversation comment is not a review comment")
+	}
+
+	log := readLog(t, filepath.Join(dir, "gh.log"))
+	for _, want := range []string{"repos/acme/demo/issues/12/comments", "direction=desc", "per_page=100"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("gh call missing %q: %s", want, log)
 		}
 	}
 }

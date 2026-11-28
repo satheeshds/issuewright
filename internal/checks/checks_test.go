@@ -302,3 +302,41 @@ func TestSecretFilesExceptTemplates(t *testing.T) {
 		t.Errorf("no exceptions = %d paths, want 6", n)
 	}
 }
+
+// A live check failed with `sh: 1: go: not found` and the detail read like a test
+// failure. It is a broken PATH on the machine, and the message should say so.
+func TestMissingToolIsNamedWithThePath(t *testing.T) {
+	dir := t.TempDir()
+	// A PATH with nothing on it: /usr/bin may well have go on the machine running
+	// the tests, and the point is what happens when it does not.
+	r := New(Options{Dir: dir, Path: "/nonexistent-bin"})
+	res := r.RunCheck(context.Background(), config.Check{
+		Name: "go", Run: []string{"cd . && go test ./..."},
+	})
+	if res.OK {
+		t.Fatal("expected a failure")
+	}
+	f := res.Failures[0]
+	if !strings.Contains(f, "go is not on this run's PATH") {
+		t.Errorf("the failure should name the missing tool:\n%s", f)
+	}
+	if !strings.Contains(f, "/nonexistent-bin") {
+		t.Errorf("the failure should print the PATH it ran with:\n%s", f)
+	}
+	if !strings.Contains(f, "agent.env") {
+		t.Errorf("the failure should say where to fix it:\n%s", f)
+	}
+}
+
+// A test that merely prints "not found" is a real failure, not a PATH problem.
+func TestMissingToolOnlyMatchesShellErrors(t *testing.T) {
+	if _, ok := missingTool("FAIL: TestX: user not found"); ok {
+		t.Error("ordinary output was read as a missing tool")
+	}
+	if tool, ok := missingTool("sh: 1: flutter: not found"); !ok || tool != "flutter" {
+		t.Errorf("sh error = %q %v", tool, ok)
+	}
+	if tool, ok := missingTool("bash: line 1: dart: command not found"); !ok || tool != "dart" {
+		t.Errorf("bash error = %q %v", tool, ok)
+	}
+}

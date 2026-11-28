@@ -88,6 +88,10 @@ func inputs(job workflow.Job) prompts.Inputs {
 		NeverRun:      job.Protect.NeverRun,
 		SecretPaths:   job.Protect.SecretPaths,
 		Notes:         job.Notes,
+		Comments:      workflow.PromptComments(job.Comments),
+		Turn:          job.Turn,
+		LastReview:    job.LastReview,
+		LastQuestion:  job.LastQuestion,
 	}
 }
 

@@ -51,12 +51,7 @@ func (e *Engine) Prompt(job workflow.Job) (brain.Spec, error) {
 	if job.Number == 0 || len(job.Comments) == 0 {
 		return brain.Spec{}, workflow.ErrNoJob
 	}
-	comments := make([]prompts.JobComment, 0, len(job.Comments))
-	for _, c := range job.Comments {
-		comments = append(comments, prompts.JobComment{
-			ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, IsReview: c.IsReview,
-		})
-	}
+	comments := workflow.PromptComments(job.Comments)
 	text, err := prompts.Render("respond", prompts.Inputs{
 		Repo:        job.Repo,
 		Number:      job.Number,

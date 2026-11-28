@@ -14,6 +14,12 @@ issue:
   in_progress_label: agent:in-progress
   blocked_label: agent:blocked
   done_label: agent:done
+  # Carried while the agent waits for an answer on the issue: not a failure, and
+  # the next human comment continues the same session.
+  question_label: agent:question
+  # How many turns one conversation may take before the runner stops it. A long
+  # implementation is normal; an endless argument is not.
+  max_turns: 10
 
 branch_prefix: agent/
 base_branch: main
